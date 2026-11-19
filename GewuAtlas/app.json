@@ -1,0 +1,57 @@
+{
+  "app_id": "gewu-atlas",
+  "directory": "GewuAtlas",
+  "lifecycle": "development-candidate",
+  "main_skill": "atlas-project",
+  "purpose": "本地知识工程与 Zettelkasten 格物域：统一在分离数据卷 Volumes/GewuAtlas-data 下管理 KEK 相对路径托管的 Vault、Obsidian .base 多维视图与卡片流水线。",
+  "schema": "forge.app-source/1",
+  "title": "格物志（GewuAtlas）",
+  "track": {
+    "integrated": false
+  },
+  "version": "0.9.4",
+  "distribution": {
+    "schema": "gewu.domain-distribution/1",
+    "supported_platforms": [
+      "macos",
+      "linux",
+      "windows"
+    ],
+    "python_minimum": "3.9",
+    "requirements": [
+      {
+        "path": "contracts/fmt-dependencies.json",
+        "format": "json-packages"
+      }
+    ],
+    "cli_manifest": "contracts/cli-manifest.json",
+    "bootstrap_profile": "contracts/bootstrap-profile.json",
+    "data_volume": {
+      "root": "Volumes/GewuAtlas-data",
+      "directories": [],
+      "initialization": "atlas vault-create (vault_skeleton from dicts/layout.yaml)",
+      "uses_kek": true,
+      "skeleton_template": "dicts/layout.yaml"
+    },
+    "demo_kind": "atlas-notes-v1",
+    "imports": [
+      "yaml",
+      "pymupdf",
+      "docx",
+      "pptx",
+      "openpyxl",
+      "xlrd",
+      "xlsxwriter",
+      "bs4",
+      "readability",
+      "html2text",
+      "lxml",
+      "lxml_html_clean",
+      "PIL",
+      "chardet",
+      "cssselect",
+      "requests",
+      "striprtf"
+    ]
+  }
+}

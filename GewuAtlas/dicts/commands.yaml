@@ -1,0 +1,456 @@
+# ==============================================================================
+# commands.yaml - 格物志 (GewuAtlas) 合并版门面动作与参数槽位字典 (SSOT)
+# 门面入口: ./gewu atlas --action <action> [slots]
+# 对齐 6 个意图收敛 Skill 与 Core 主干动词（保留全部历史细分动作作 compat 向后兼容）
+# ==============================================================================
+version: "2.4.0"
+updated: "2026-11-17"
+entry_command: "./gewu atlas --action <action>"
+
+fmt_options:
+  pdf_mode: ["auto", "paper", "ppt"]
+  dpi_range: [36, 600]
+  table_threshold_range: [1, 10000]
+  table_threshold_default: 50
+  allowed_subdir_zones: ["dropzone", "library", "slices", "workbench", "archives"]
+  flat_zones: ["atomics", "moc", "slip", "attachments"]
+
+command_groups:
+  - group: "vault"
+    skill: "atlas-project"
+    description: "知识库 (vlt_XX) 容器生命周期、会话上下文绑定与看板同步"
+    actions:
+      - name: "vault"
+        mode: "read"
+        surface: "core"
+        slots: ["[--mode]", "[--ref]", "[--title]", "[--session]", "[--include_deleted]", "[--switch_current]"]
+        summary: "统一 Vault 上下文、清单与状态入口（--mode summary|list|get|use|default-set|reset|create|update；默认一次返回当前绑定+全库清单）"
+      - name: "vault-context"
+        mode: "read"
+        slots: ["[--session]"]
+        summary: "查询当前会话绑定库、默认库及有效解析来源"
+      - name: "vault-use"
+        mode: "write"
+        slots: ["--ref", "[--session]"]
+        summary: "切换当前会话绑定的活动知识库"
+      - name: "vault-reset"
+        mode: "write"
+        slots: ["[--session]"]
+        summary: "清空当前会话绑定库并回退至默认库"
+      - name: "vault-default-get"
+        mode: "read"
+        slots: []
+        summary: "读取全局默认知识库句柄"
+      - name: "vault-default-set"
+        mode: "write"
+        slots: ["--ref", "[--switch_current]"]
+        summary: "设置全局默认库，可选同步切换当前会话"
+      - name: "status"
+        mode: "read"
+        slots: ["[--ref]"]
+        summary: "返回运行态与库注册表概览"
+      - name: "vault-create"
+        mode: "write"
+        slots: ["--title", "[--vault]", "[--obsidian_base]"]
+        summary: "初始化新知识库分形骨架、专属 DOC 版本库与 .base 看板"
+      - name: "vault-import"
+        mode: "write"
+        slots: ["[--vault]", "[--title]", "[--seal_rename]", "[--obsidian_base]", "[--default_mode]"]
+        summary: "一次性安全接管数据卷内已存在的同构 Vault（省略 --vault 时仅盲采唯一候选），分配逻辑句柄与索引并提示开启新对话"
+      - name: "vault-list"
+        mode: "read"
+        slots: ["[--include_deleted]"]
+        summary: "列出全部知识库句柄、标题与状态"
+      - name: "vault-get"
+        mode: "read"
+        slots: ["--ref"]
+        summary: "读取指定知识库元数据与骨架状态"
+      - name: "vault-update"
+        mode: "write"
+        slots: ["--ref", "--title"]
+        summary: "更新知识库展示标题"
+      - name: "vault-delete"
+        mode: "write"
+        slots: ["--ref"]
+        summary: "整库安全软删除（保留全部内容与日记，可恢复）"
+      - name: "vault-restore"
+        mode: "write"
+        slots: ["--ref"]
+        summary: "恢复已软删除的知识库"
+      - name: "index-sync"
+        mode: "write"
+        slots: ["--ref", "[--force]"]
+        summary: "增量补齐缺失目录与 10-Index/*.base 看板（默认保护人工修改）"
+
+  - group: "project"
+    skill: "atlas-project"
+    description: "课题域 (prj_XX) 分形容器生命周期与工作台研究空间 (ws-<agent>) 管理"
+    actions:
+      - name: "project-create"
+        mode: "write"
+        slots: ["--ref", "--title", "[--project_id]", "[--default_mode]", "[--private]", "[--preset]", "[--summary]", "[--tags]", "[--by]"]
+        summary: "新建分形课题域与 Manifest 台账"
+      - name: "project-list"
+        mode: "read"
+        slots: ["--ref", "[--status]", "[--include_trashed]", "[--query]", "[--offset]", "[--top_k]"]
+        summary: "列出库内课题域句柄、模式、可见性与状态"
+      - name: "project-get"
+        mode: "read"
+        slots: ["--ref", "--project_ref"]
+        summary: "读取课题 Manifest 详情与各分区卡片统计"
+      - name: "project-rename"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--title]", "[--new_project_id]", "[--by]"]
+        summary: "安全重命名课题标题或标识并级联重绑句柄与引用"
+      - name: "project-merge"
+        mode: "write"
+        slots: ["--ref", "--source_project_refs", "--target_title", "[--target_project_id]", "[--workbench_conflict]", "[--dry_run]", "[--by]"]
+        summary: "多课题合并（含双阶段指纹快照与 combined_from 溯源）"
+      - name: "project-split"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "--split_plan", "[--dry_run]", "[--by]"]
+        summary: "按主题或笔记句柄拆分课题（含 split_from 溯源与快照保护）"
+      - name: "project-undo"
+        mode: "write"
+        slots: ["--ref", "--op_id", "[--mode]", "[--expected_sha256]", "[--dry_run]"]
+        summary: "校验操作后指纹无冲突后回滚课题合并或拆分"
+      - name: "project-history"
+        mode: "read"
+        slots: ["--ref", "[--project_ref]"]
+        summary: "查看课题合并、拆分与状态变更历史记录"
+      - name: "project-publish"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--by]"]
+        summary: "将私有课题转为公开入网（private: false）"
+      - name: "project-unpublish"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--by]"]
+        summary: "将课题退网转为私有并安全脱链审计"
+      - name: "project-restore-links"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--by]"]
+        summary: "恢复课题退网前记录的跨域双链"
+      - name: "project-archive"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--by]"]
+        summary: "归档冻结课题域（拦截后续写操作）"
+      - name: "project-reopen"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--by]"]
+        summary: "解冻重启已归档课题域"
+      - name: "project-trash"
+        mode: "write"
+        slots: ["--ref", "--project_ref", "[--force]", "[--apply]", "[--by]"]
+        summary: "安全软删整个课题域至回收站"
+      - name: "project-untrash"
+        mode: "write"
+        slots: ["--ref", "[--trash_ref]", "[--project_ref]", "[--query]", "[--offset]", "[--top_k]"]
+        summary: "检索或从回收站完整恢复已软删课题域"
+      - name: "workbench-preset"
+        mode: "write"
+        slots: ["--ref", "[--project_ref]", "[--scope]", "--preset"]
+        summary: "按预设模板扩建工作台子目录与 README 受控块（不覆盖手写内容）"
+      - name: "workbench-workspace"
+        mode: "write"
+        slots: ["--ref", "[--project_ref]", "[--scope]", "[--mode]", "[--agent_name]", "[--task_slug]"]
+        summary: "分配或列举 Agent 个人研究空间 ws-<agent>[--<task>]"
+
+  - group: "vfs"
+    skill: "atlas-note"
+    description: "受控文件与普通业务文件夹 (--subdir) 事务读写、搬迁、软删与回收站恢复"
+    actions:
+      - name: "vfs-create"
+        mode: "write"
+        slots: ["--ref", "--title", "[--zone]", "[--subdir]", "[--project_ref]", "[--doc_type]", "[--summary]", "[--tags]", "[--content]"]
+        summary: "VFS 独占新建文件（支持在允许区连带创建受控子目录，防同名覆盖）"
+      - name: "vfs-move"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--zone]", "[--subdir]", "[--target_zone]", "[--target_subdir]", "[--title]", "[--on_links]", "[--project_ref]", "[--scope]"]
+        summary: "单文件或受控文件夹重命名/跨区搬迁（保持子树句柄并级联或降级双链/画布）"
+      - name: "vfs-copy"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--target_zone]", "[--title]", "[--project_ref]", "[--scope]"]
+        summary: "受控复制文件（校验目标拓扑与 10-Artifacts 准入拦截）"
+      - name: "vfs-trash"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--file_name]", "[--zone]", "[--subdir]", "[--on_links]", "[--force]", "[--apply]"]
+        summary: "安全软删单文件、附件或受控文件夹至回收站 trs_XX"
+      - name: "vfs-trash-list"
+        mode: "read"
+        slots: ["--ref", "[--query]", "[--doc_type]", "[--offset]", "[--top_k]"]
+        summary: "分页列出回收站条目与 trs_XX 句柄"
+      - name: "vfs-untrash"
+        mode: "write"
+        slots: ["--ref", "[--trash_ref]", "[--target_zone]", "[--project_ref]", "[--scope]", "[--query]", "[--offset]", "[--top_k]"]
+        summary: "按 trs_XX 句柄从回收站恢复至有效分区"
+      - name: "vfs-validate"
+        mode: "read"
+        slots: ["--ref"]
+        summary: "全库 VFS 拓扑、扁平目录不变量与命名规范巡检"
+      - name: "vfs-links"
+        mode: "read"
+        slots: ["--ref", "[--note_ref]"]
+        summary: "全库或单卡双向链接健壮性、悬空死链与同名歧义扫描"
+      - name: "file-read"
+        mode: "read"
+        surface: "core"
+        slots: ["--ref", "[--project_ref]", "[--scope]", "[--zone]", "[--subdir]", "[--file_name]", "[--start_line]", "[--end_line]", "[--head]", "[--tail]"]
+        summary: "受控列举某逻辑分区（如 workbench/dropzone）文件或按全文/区间/head/tail 读取 UTF-8 文本源码与日志"
+      - name: "trash"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--mode]", "[--note_ref]", "[--note_refs]", "[--file_name]", "[--zone]", "[--subdir]", "[--project_ref]", "[--scope]", "[--trash_ref]", "[--target_zone]", "[--on_links]", "[--force]", "[--apply]", "[--query]"]
+        summary: "统一软删、回收站列表与恢复入口（--mode delete|list|restore，自动路由至单卡/文件/子目录/课题/整库）"
+
+  - group: "note"
+    skill: "atlas-note"
+    description: "知识卡片 CRUD、升阶废弃与高维交付成果 (Artifact) 采收定稿"
+    actions:
+      - name: "note-create"
+        mode: "write"
+        slots: ["--ref", "--title", "[--zone]", "[--subdir]", "[--project_ref]", "[--doc_type]", "[--summary]", "[--tags]", "[--status]", "[--content]", "[--by]"]
+        summary: "创建笔记或知识卡片"
+      - name: "note-list"
+        mode: "read"
+        slots: ["--ref", "[--zone]", "[--project_ref]", "[--doc_type]", "[--status]", "[--offset]", "[--top_k]"]
+        summary: "按分区、课题、类型或状态列举卡片清单"
+      - name: "note-get"
+        mode: "read"
+        surface: "core"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--raw]", "[--start_line]", "[--end_line]", "[--head]", "[--tail]"]
+        summary: "读取单张或批量卡片（--note_refs）完整正文、YAML 元数据、content_sha256 及按行区间/head/tail 截取（日志推荐 --tail 40）"
+      - name: "note-update"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--title]", "[--summary]", "[--tags]", "[--status]", "[--content]", "[--by]"]
+        summary: "原子更新卡片元数据或正文"
+      - name: "note-promote"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--target_zone]", "[--scope]", "[--on_conflict]", "[--target_note_ref]", "[--by]"]
+        summary: "卡片跨区升阶或课题活跃原子卡向上晋升至 AI-Zone（支持 abort/supersede/merge）"
+      - name: "note-deprecate"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--superseded_by_ref]", "[--move_to_attic]", "[--by]"]
+        summary: "将卡片标记为 deprecated、注入废弃横幅并默认移入 97-Attic"
+      - name: "artifact-adopt"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--project_ref]", "[--target_zone]", "[--on_conflict]", "[--ticket_id]", "[--by]"]
+        summary: "将工作台草稿采收进入 10-Artifacts（stage=draft）或 21-Library"
+      - name: "artifact-finalize"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--project_ref]", "[--ticket_id]", "[--by]"]
+        summary: "将 10-Artifacts 草稿正式定稿为 stage=final"
+
+  - group: "journal"
+    skill: "atlas-note"
+    description: "格物日记 (05-Journal) 人机双区记录与月度归档（只归档不删除）"
+    actions:
+      - name: "journal"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--mode]", "[--date]", "[--content]", "[--note_ref]", "[--days]", "[--dry_run]"]
+        summary: "统一日记入口（--mode show|today|append|archive；默认读或按 --content 自动追加）"
+      - name: "journal-today"
+        mode: "write"
+        slots: ["--ref", "[--date]"]
+        summary: "读取或按 # 人类记录 / # AI日志 双区模板创建当日日志"
+      - name: "journal-show"
+        mode: "read"
+        slots: ["--ref", "[--date]"]
+        summary: "只读查看指定日期或已归档日志"
+      - name: "journal-append"
+        mode: "write"
+        slots: ["--ref", "--content", "[--note_ref]"]
+        summary: "向当日日志 # AI日志 区追加记录（严格保护人类记录区）"
+      - name: "journal-archive"
+        mode: "write"
+        slots: ["--ref", "[--days]", "[--dry_run]"]
+        summary: "将超出保留窗口的历史日志按 YYYY/MM/ 月度目录归档"
+
+  - group: "slip"
+    skill: "atlas-note"
+    description: "行内 ==@指令==（兼容全半角及历史 @@...@@）书签批注卡片 (slp_XX) 全流程与跨域工单桥接"
+    actions:
+      - name: "slip"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--mode]", "[--note_ref]", "[--source_note_ref]", "[--marker_id]", "[--marker_text]", "[--title]", "[--content]", "[--expected_sha256]", "[--project_ref]", "[--scope]", "[--apply]", "[--ticket_id]"]
+        summary: "统一书签入口（--mode scan|commit|list|get|update|delete，默认 list）"
+      - name: "slip-scan"
+        mode: "read"
+        slots: ["--ref", "[--note_ref]", "[--file_name]", "[--project_ref]", "[--zone]", "[--subdir]", "[--create_ticket]", "[--batch_key]", "[--ticket_id]"]
+        summary: "围栏感知扫描文档内 ==@指令==（兼容全半角及历史 @@...@@）书签标记块，支持按单文件/文件夹(--zone+--subdir)/课题(--project_ref)限定范围"
+      - name: "slip-commit"
+        mode: "write"
+        slots: ["--ref", "--title", "--content", "[--source_note_ref]", "[--marker_id]", "[--marker_text]", "[--expected_sha256]", "[--slip_kind]", "[--links]", "[--source_url]", "[--project_ref]", "[--scope]", "[--ticket_id]", "[--batch_key]", "[--mark_done]"]
+        summary: "生成 25-Slip 卡片并建立正文与卡片双向回链"
+      - name: "slip-list"
+        mode: "read"
+        slots: ["--ref", "[--project_ref]", "[--status]", "[--slip_kind]"]
+        summary: "列出域内 25-Slip 书签卡片句柄与别名"
+      - name: "slip-get"
+        mode: "read"
+        slots: ["--ref", "--note_ref"]
+        summary: "读取书签卡片正文、别名与双向链接"
+      - name: "slip-update"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--title]", "[--summary]", "[--tags]", "[--aliases]", "[--slip_kind]", "[--status]", "[--content]"]
+        summary: "更新书签卡片元数据或正文"
+      - name: "slip-delete"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--source_note_ref]", "[--marker_id]", "[--marker_text]", "[--apply]", "[--ticket_id]"]
+        summary: "预览入向引用并经确认后清理全库双链、软删书签卡"
+      - name: "ticket-create"
+        mode: "write"
+        slots: ["--title", "[--category]"]
+        summary: "跨域桥接 GewuTicket 创建协作工单"
+      - name: "ticket-list"
+        mode: "read"
+        slots: []
+        summary: "跨域桥接查询 GewuTicket 在途工单列表"
+
+  - group: "guard"
+    skill: "atlas-ops"
+    description: "字典防污染巡检、健康体检、孤岛清理、月度冷备、快照撤回 (undo) 与 DOC Git 同步"
+    actions:
+      - name: "guard"
+        mode: "read"
+        surface: "ops"
+        slots: ["[--ref]", "[--mode]", "[--note_ref]", "[--doc_type]", "[--change_id]", "[--strict]", "[--apply]", "[--force]", "[--days]", "[--dry_run]", "[--reason]"]
+        summary: "统一运维体检入口（--mode health|schema|schema-list|validate|links|doc-status|doc-commit|clean-attachments|archive-list|archive-pack|trash-purge|retention-sweep|change-list|change-get|undo）"
+      - name: "schema-list"
+        mode: "read"
+        slots: ["[--doc_type]"]
+        summary: "返回 dicts/metadata.yaml 与 layout.yaml 权威 Schema 定义"
+      - name: "schema-check"
+        mode: "read"
+        slots: ["--ref", "[--note_ref]", "[--strict]"]
+        summary: "核查全库或单卡 YAML 必填项、枚举与未登记污染字段"
+      - name: "health-check"
+        mode: "read"
+        slots: ["--ref", "[--strict]"]
+        summary: "全库 YAML、分区拓扑、断链与污染键综合体检"
+      - name: "clean-attachments"
+        mode: "write"
+        slots: ["--ref", "[--apply]"]
+        summary: "盘点或安全软删 10-Attachments 孤岛附件"
+      - name: "archive-list"
+        mode: "read"
+        slots: ["--ref", "[--project_ref]"]
+        summary: "盘点 98-Archives 待冷备原件清单"
+      - name: "archive-pack"
+        mode: "write"
+        slots: ["--ref", "[--project_ref]", "[--month]", "[--dry_run]", "[--purge]"]
+        summary: "按月打包 98-Archives 原件为冷备归档包"
+      - name: "change-list"
+        mode: "read"
+        slots: ["--ref", "[--ticket_id]", "[--offset]", "[--top_k]"]
+        summary: "列出 chg_XX 变更审计记录"
+      - name: "change-get"
+        mode: "read"
+        slots: ["--ref", "--change_id"]
+        summary: "查看指定 chg_XX 的行级 Diff 明细"
+      - name: "undo"
+        mode: "write"
+        slots: ["--ref", "--change_id"]
+        summary: "在快照完整且无人类后续修改冲突时撤回受控变更"
+      - name: "doc-status"
+        mode: "read"
+        slots: ["--ref"]
+        summary: "识别 DOC Git 未提交的人类手工增删改与断链状态"
+      - name: "doc-commit"
+        mode: "write"
+        slots: ["--ref", "[--mode]", "[--force]", "[--reason]"]
+        summary: "提交 DOC 轨变更（支持 standard 与 human-sync 收口）"
+      - name: "trash-purge"
+        mode: "write"
+        slots: ["--ref", "[--days]", "[--dry_run]"]
+        summary: "清理回收站内超期条目（永久豁免日记）"
+      - name: "retention-sweep"
+        mode: "write"
+        slots: ["--ref", "[--days]", "[--dry_run]"]
+        summary: "按默认 30 天窗口统一清扫过期回收项与历史变更快照"
+
+  - group: "pipeline_and_qa"
+    skill: "atlas-ingest-flow / atlas-qa"
+    description: "五阶段知识加工入口与只读循证检索算子"
+    actions:
+      - name: "ingest"
+        mode: "write"
+        surface: "core"
+        slots: ["[--ref]", "[--mode]", "[--file_name]", "[--input_file]", "[--url]", "[--urls]", "[--note_ref]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--auto_slice]", "[--level]", "[--adaptive]", "[--deep]", "[--annotate_images]", "[--dry_run]", "[--by]"]
+        summary: "统一摄取入口（--mode auto|list|import|url|fmt|route；支持 --urls 批量抓取、短页<300字质检、工作台采集台账及 --auto_slice true）"
+      - name: "inbox-list"
+        mode: "read"
+        slots: ["--ref", "[--offset]", "[--top_k]"]
+        summary: "分页列出 00-DropZone 原始待处理文件（含二进制原件）"
+      - name: "attachment-import"
+        mode: "write"
+        slots: ["--ref", "--file_name", "[--project_ref]", "[--scope]"]
+        summary: "将受控输入附件导入 10-Attachments 或 DropZone"
+      - name: "url-ingest"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--file_name]", "[--url]", "[--urls]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--by]", "[--dry_run]"]
+        summary: "SSRF 防护单条/批量 URL 抓取（默认 <300 字短页含链提示追查/无链抛弃，自动写入工作台采集台账 url-ingest-log.md）"
+      - name: "note-route"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--target_zone]", "[--project_ref]", "[--scope]", "[--by]"]
+        summary: "将 DropZone 草记分拣路由至目标分区并补齐基础元数据"
+      - name: "fmt"
+        mode: "write"
+        slots: ["[--ref]", "[--note_ref]", "[--file_name]", "[--url]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--pdf_mode]", "[--dpi]", "[--skip_decorative]", "[--decorative_size]", "[--decorative_dim]", "[--threshold]", "[--encoding]", "[--by]", "[--deep]", "[--annotate_images]", "[--normalize]", "[--check]", "[--dry_run]", "[--setup]"]
+        summary: "多模态文档转译（PDF/Word/Excel/PPT/HTML/Web/图片/MD）并按月冷存原件"
+      - name: "fmt-window"
+        mode: "read"
+        slots: ["--ref", "--note_ref", "[--window_index]", "[--window_size]"]
+        summary: "读取长文档逐窗精修切片窗口"
+      - name: "fmt-apply-window"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "--window_index", "--content", "[--expected_sha256]"]
+        summary: "写回逐窗精修内容并校验原文件版本摘要"
+      - name: "fmt-assets"
+        mode: "read"
+        slots: ["--ref", "--note_ref"]
+        summary: "列出文档关联的多模态插图附件供全图视觉理解与注释"
+      - name: "note-slice"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--mode]", "[--split_level]", "[--target_chars]", "[--max_chars]", "[--project_ref]", "[--scope]", "[--force]", "[--dry_run]", "[--by]"]
+        summary: "长篇文献 AST 自适应/定级切片并生成伴生 TOC 树形导读骨架"
+      - name: "atomic-extract"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--note_ref]", "[--slice_refs]", "[--toc_refs]", "[--epistemic_type]", "[--title]", "[--summary]", "[--tags]", "[--aliases]", "[--content]", "[--provenance]", "[--project_ref]", "[--scope]", "[--mode]", "[--review_mode]", "[--auto_approve]", "[--dry_run]", "[--by]"]
+        summary: "从 TOC/切片/文献萃取原子卡（直接返回新建卡 content_sha256；auto 域支持 --auto_approve true，supervised 域强制人工审阅）"
+      - name: "atomic-approve"
+        mode: "write"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "--expected_sha256", "[--reviewed_by]", "[--by]"]
+        summary: "校验 expected_sha256 版本摘要后将 pending 原子卡审批转正为 active"
+      - name: "moc-sync"
+        mode: "write"
+        slots: ["--ref", "[--mode]", "[--project_ref]", "[--scope]", "[--title]", "[--name]", "[--tag]", "[--topic]", "[--prism]", "[--zone]", "[--note_ref]", "[--by]", "[--force]", "[--dry_run]", "[--check]", "[--top_k]"]
+        summary: "生成或刷新 23-MOC 主题知识地图（含逻辑闭环评估/缺口/扩展研究收尾章节与 map 回链），或 --mode roam 只读自主漫游发现成熟未归属原子簇"
+      - name: "note-link"
+        mode: "write"
+        slots: ["--ref", "[--mode]", "[--note_ref]", "[--note_refs]", "[--target_ref]", "[--project_ref]", "[--alias]", "[--dry_run]"]
+        summary: "建立两张卡片双链（--mode link）或批量修复错链/句柄/标题双链（--mode fix）"
+      - name: "graph-report"
+        mode: "read"
+        slots: ["--ref", "[--zone]"]
+        summary: "统计全库或分区双向连接拓扑、枢纽卡、孤岛卡与待分拣队列"
+      - name: "note-format"
+        mode: "write"
+        slots: ["--ref", "--note_ref", "[--doc_type]", "[--summary]", "[--tags]", "[--by]"]
+        summary: "规范化卡片 Frontmatter、标题与排版结构"
+      - name: "note-search"
+        mode: "read"
+        slots: ["[--ref]", "--query", "[--mode]", "[--terms]", "[--zone]", "[--project_ref]", "[--doc_type]", "[--epistemic_type]", "[--status]", "[--exclude_zones]", "[--exclude_project_refs]", "[--exclude_pending]", "[--exclude_draft]", "[--boost]", "[--alpha]", "[--beta]", "[--hops]", "[--deep]", "[--min_score]", "[--snippet_width]", "[--summary_width]", "[--no_snippet]", "[--no_cache]", "[--fields]", "[--link_fields]", "[--include_archived]", "[--private]", "[--all_vaults]", "[--top_k]"]
+        summary: "三档智能检索（--mode locate 定位清单 | passage 默认完整段落直答 | deep 摘要+入出链Top3）与 BM25+双链图增益排序"
+      - name: "delivery-check"
+        mode: "read"
+        surface: "ops"
+        slots: ["--ref", "[--project_ref]", "[--note_ref]", "[--note_refs]"]
+        summary: "执行 60 分算子硬评估（空间净空/Schema/双链真值/审批边界）并输出 40 分 Subagent/自评量表协议"
+      - name: "usecase"
+        mode: "read/write"
+        surface: "core"
+        slots: ["[--mode]", "[--uc_id]", "[--query]", "[--title]", "[--scenarios]", "[--tags]", "[--content]", "[--by]", "[--top_k]"]
+        summary: "增删改查与匹配 GewuAtlas/usecase-for-agent/ 实战经验路书（list/get/match/upsert/delete）并自动刷新 README.md 索引"

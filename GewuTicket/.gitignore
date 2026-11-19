@@ -1,0 +1,17 @@
+# Local encrypted state, secrets, tokens, builds, backups and logs (never commit; no warning READMEs)
+.local/
+.runtime/
+build/
+dist/
+backups/
+*.tar
+*.tar.gz
+*.enc.db
+*.enc.db-*
+vault.enc
+.vault_kek
+kek.key
+*.key
+*.pem
+.env
+.env.*

@@ -1,0 +1,551 @@
+# ==============================================================================
+# metadata.yaml - 格物志 V2 全局 Frontmatter 元数据双层正交字典 (迁移自 116 并对齐 GewuAtlas)
+# ==============================================================================
+version: "2.3.0"
+updated: "2026-11-15"
+description: >-
+  格物志 Frontmatter 元数据双层正交字典契约：六项共有基石 + 类型自有扩展 + 署名三元组溯源；
+  在 116-gwf-v2-R6 基础上同步 GewuAtlas 的 memo/project、五类工单（SYS/DOC/MSG/TASK/SLIP），
+  并新增 25-Slip 的 doc_type: slip（半结构化随记批注与任务产物，不污染 20-Memory 核心记忆）。
+
+vocabularies:
+  doc_type:
+    description: 文档形态定位 (自描述强类型)
+    allowed_values:
+      journal:
+        label: 日记随记
+        description: 05-Journal 人机共用日常记录，非已核验知识
+      manifest:
+        label: 域总控台账
+        description: Manifest-{id}.md 总控台账
+      memo:
+        label: 未整理原始笔记（note）
+        description: 00-DropZone 待分拣原始笔记（note，含任意格式文本、无 YAML 随记与 URL 清单）
+      artifact:
+        label: 成果交付物（artifact）
+        description: 10-Artifacts 成果交付舱定稿交付物
+      library:
+        label: 正式入库文档（document）
+        description: 20-Memory/21-Library 已整理规范化、可入库检索的正式文档（document，含 PDF/docx 经 fmt 转译生成的伴生 Markdown）
+      atomic:
+        label: 原子知识卡（atomic）
+        description: 20-Memory/22-Atomics 原子概念卡片（atomic，一事一卡，由 atomic-extract 萃取并经 atomic-approve 转正）
+      moc:
+        label: 知识地图（moc）
+        description: 20-Memory/23-MOC 主题知识地图与四层脑图大纲（moc）
+      slice:
+        label: 文档切片卡（slice）
+        description: 20-Memory/24-Slices 长文档解构物理切片（slice）
+      toc:
+        label: 文档内容目录（toc）
+        description: 20-Memory/24-Slices 文档树形内容目录骨架（toc）
+      slice_toc:
+        label: 文档内容目录(兼容别名)
+        description: 20-Memory/24-Slices 文档内容目录骨架历史别名（推荐 toc）
+      slip:
+        label: 书签批注与随记任务卡片
+        description: 25-Slip 阅读文档 @@...@@ 触发生成的轻结构批注/检索/下载摘要卡片（20 记忆域同级扩展舱）
+      workbench:
+        label: 工作台原始笔记（note）
+        description: 30-Workbench（含预设子目录与 30-Workbench/source 原文暂存区）未加 YAML 的人类自由工作台笔记（note，支持任意格式）
+      project:
+        label: 课题域卡片
+        description: 30-Projects 课题域笔记
+      index:
+        label: 导航控制台
+        description: 10-Index 看板视图
+      ticket:
+        label: 任务工单
+        description: GewuTicket 独立工单卷协作工单（SYS/DOC/MSG/TASK/SLIP）
+      handover:
+        label: 交接单(废止)
+        description: 历史交接单兼容类型
+
+  default_mode:
+    description: 域决策模式 (仅 manifest 持有)
+    allowed_values:
+      auto:
+        label: 自动模式
+        description: AI 自主闭环，AI-Zone 专属
+      supervised:
+        label: 监督模式
+        description: 人机协同，课题域专属
+
+  type:
+    description: 知识认识论定性
+    allowed_values:
+      OBJ:
+        label: 客观事实
+        description: 客观事实、论文数据与实验结论
+      SUB:
+        label: 主观洞察
+        description: 专家观点、个人经验与直觉
+      SYN:
+        label: 人机推导
+        description: 逻辑演绎、归纳综合与跨域推演
+      HYP:
+        label: 待证假说
+        description: 待实验验证的假说猜想
+
+  status:
+    description: 全库统一知识真理有效性状态 (票据类例外: ticket 的 status 承载流程态 ref ticket_status)
+    allowed_values:
+      active:
+        label: 生效常青
+        description: 知识已审核生效，常青有效
+      pending:
+        label: 待人工审核
+        description: 待审核卡片，默认隔离
+      deprecated:
+        label: 已废弃
+        description: 淘汰废弃或已结项冻结
+      archived:
+        label: 已归档
+        description: 已归档冻结（课题/成果等冷存态）
+
+  read_status:
+    description: 内容地图阅读状态
+    allowed_values:
+      unread:
+        label: 未读
+        description: 待人类首次导读
+      read:
+        label: 已读
+        description: 已完成阅读导读
+
+  stage:
+    description: 成果阶段 (仅 artifact 持有)
+    allowed_values:
+      draft:
+        label: 初稿草稿
+        description: 成果初稿
+      final:
+        label: 完成定稿
+        description: 成果已正式定稿收敛
+
+  ticket_status:
+    description: 任务工单流程状态机 (仅 ticket 持有)
+    allowed_values:
+      open:
+        label: 待接手
+        description: 票据已建，等待接手方 pickup；reopen 拉回归档件亦回此态
+      in_progress:
+        label: 进行中
+        description: 已被接手方抢占，处理进行中
+      paused:
+        label: 已暂停
+        description: 未完成但暂不推进，放入 paused/；显式 resume 回 open 后重新接单
+      done:
+        label: 已闭环
+        description: 任务完成，归档 closed/ -> archive/
+      completed:
+        label: 已完成
+        description: 桥梁审计镜像已完成
+      cancelled:
+        label: 已取消
+        description: 建票方撤回或异常终止，归档 closed/ -> archive/
+
+  reviewed_by:
+    description: 审核归属标记
+    allowed_values:
+      ai:
+        label: AI 自动转正
+        description: auto 模式下 AI 自动转正
+      human:
+        label: 人工审核
+        description: 人类显式审核转正
+
+  source_type:
+    description: 原料资产载体介质类型
+    allowed_values:
+      article:
+        label: 网页文章
+      document:
+        label: 办公文档
+      paper:
+        label: 学术论文
+      docx:
+        label: Word 文档
+      presentation:
+        label: 演示文稿
+      excel:
+        label: 表格数据
+      image:
+        label: 视觉图片
+      transcript:
+        label: 语音速记
+      journal:
+        label: 周期日记
+      others:
+        label: 其他格式
+
+  slip_kind:
+    description: 书签 @@...@@ 触发的任务形态
+    allowed_values:
+      explain:
+        label: 解释/问答批注
+        description: 如 @@解释下上面这段话@@，产出正文与源文双链
+      download:
+        label: 链接下载与摘要
+        description: 原文落盘 30-Workbench/source/，slip 卡片附加摘要与原文双链
+      search:
+        label: 关联检索
+        description: 检索相关 slip 或知识卡片并返回汇总结果
+      note:
+        label: 衍生随记
+        description: 从书签继续追加轻结构随记卡片
+      delete:
+        label: 软删清理
+        description: 清理不再需要的书签卡片
+      custom:
+        label: 自定义任务
+        description: 其他由 Agent 承接的书签触发任务
+
+schemas:
+  journal:
+    name: 日记随记
+    folder_pattern: '^05-Journal/'
+    required_properties:
+      doc_type: { type: string, fixed_value: journal }
+    optional_properties:
+      title: { type: string }
+      date: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      private: { type: boolean, fixed_value: true }
+      summary: { type: string, max_length: 200 }
+      tags: { type: "list[string]" }
+      aliases: { type: "list[string]" }
+      created_by: { type: string }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+
+  memo:
+    name: 未整理原始笔记（note）
+    folder_pattern: '^00-DropZone/'
+    required_properties:
+      doc_type: { type: string, fixed_value: memo }
+      title: { type: string }
+    optional_properties:
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      aliases: { type: "list[string]" }
+      project_id: { type: string }
+      private: { type: boolean }
+      type: { type: string, ref_vocab: type }
+      read_status: { type: string, ref_vocab: read_status }
+      source: { type: string }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      created_by: { type: string }
+      updated_by: { type: string }
+
+  manifest:
+    name: 域总控台账
+    folder_pattern: 'Manifest-[^/]+\.md$'
+    required_properties:
+      doc_type: { type: string, fixed_value: manifest }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      default_mode: { type: string, ref_vocab: default_mode }
+      project_id: { type: string }
+    optional_properties:
+      aliases: { type: "list[string]" }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      combined_from: { type: "list[string]" }
+      split_from: { type: string }
+      merged_into: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  artifact:
+    name: 成果交付物
+    folder_pattern: '10-Artifacts/'
+    required_properties:
+      doc_type: { type: string, fixed_value: artifact }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      stage: { type: string, ref_vocab: stage }
+    optional_properties:
+      superseded_by: { type: string }
+      project_id: { type: string }
+      type: { type: string, ref_vocab: type }
+      aliases: { type: "list[string]" }
+      source: { type: string }
+      sources: { type: "list[string]" }
+      toc: { type: "list[string]" }
+      slices: { type: "list[string]" }
+      provenance: { type: "list[string]" }
+      map: { type: "list[string]" }
+      moc: { type: "list[string]" }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      processed: { type: boolean }
+      extracted_to: { type: "list[string]" }
+      combined_from: { type: "list[string]" }
+      split_from: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+
+  library:
+    name: 正式入库文档与伴生卡片（document）
+    folder_pattern: '21-Library/'
+    required_properties:
+      doc_type: { type: string, fixed_value: library }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      aliases: { type: "list[string]" }
+      author: { type: string }
+      created: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      source_type: { type: string, ref_vocab: source_type }
+      source: { type: string }
+      source_url: { type: string }
+      original_url: { type: string }
+      map: { type: "list[string]" }
+      moc: { type: "list[string]" }
+      channel: { type: string }
+      processed: { type: boolean }
+      original_file: { type: string }
+      source_file: { type: string }
+      diagram_category: { type: string }
+      diagram_format: { type: string }
+      total_slides: { type: integer }
+      sheet_count: { type: integer }
+      total_rows: { type: integer }
+      sheets: { type: "list[string]" }
+      extracted_to: { type: "list[string]" }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      project_id: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  atomic:
+    name: 原子知识卡（atomic）
+    folder_pattern: '22-Atomics/'
+    required_properties:
+      doc_type: { type: string, fixed_value: atomic }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      review_mode: { type: string, ref_vocab: default_mode }
+      type: { type: string, ref_vocab: type }
+      read_status: { type: string, ref_vocab: read_status }
+      moc: { type: "list[string]" }
+      map: { type: "list[string]" }
+      aliases: { type: "list[string]" }
+      source: { type: string }
+      toc: { type: "list[string]" }
+      sources: { type: "list[string]" }
+      provenance: { type: "list[string]" }
+      slices: { type: "list[string]" }
+      supersedes: { type: string }
+      superseded_by: { type: string }
+      combined_from: { type: "list[string]" }
+      split_from: { type: string }
+      project_id: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      created_by: { type: string }
+      updated_by: { type: string }
+
+  moc:
+    name: 知识地图（moc）
+    folder_pattern: '23-MOC/'
+    required_properties:
+      doc_type: { type: string, fixed_value: moc }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      read_status: { type: string, ref_vocab: read_status }
+      type: { type: string, fixed_value: SYN }
+      aliases: { type: "list[string]" }
+      project_id: { type: string }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  slice:
+    name: 文档切片卡（slice）
+    folder_pattern: '24-Slices/'
+    required_properties:
+      doc_type: { type: string, fixed_value: slice }
+      title: { type: string }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      summary: { type: string, max_length: 200 }
+      aliases: { type: "list[string]" }
+      source_doc: { type: string }
+      chapter_path: { type: string }
+      slice_id: { type: string }
+      map: { type: "list[string]" }
+      has_code: { type: boolean }
+      processed: { type: boolean }
+      core_claim: { type: string }
+      context_prerequisite: { type: string }
+      project_id: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  toc:
+    name: 文档内容目录（toc）
+    folder_pattern: '24-Slices/'
+    required_properties:
+      doc_type: { type: string, fixed_value: toc }
+      title: { type: string }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      summary: { type: string, max_length: 200 }
+      aliases: { type: "list[string]" }
+      source_doc: { type: string }
+      total_slices: { type: integer }
+      split_level: { type: integer }
+      processed_mode: { type: string }
+      extracted: { type: boolean }
+      extracted_to: { type: "list[string]" }
+      project_id: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  slip:
+    name: 书签批注与随记任务卡片
+    folder_pattern: '25-Slip/'
+    required_properties:
+      doc_type: { type: string, fixed_value: slip }
+      title: { type: string }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      summary: { type: string, max_length: 200 }
+      aliases: { type: "list[string]" }
+      slip_kind: { type: string, ref_vocab: slip_kind }
+      source: { type: string }
+      source_note: { type: string }
+      source_url: { type: string }
+      parent_slip: { type: string }
+      project_id: { type: string }
+      ticket_id: { type: string }
+      created_by: { type: string }
+      updated_by: { type: string }
+
+  workbench:
+    name: 工作台原始笔记（note）与下载原文记录
+    folder_pattern: '30-Workbench/'
+    required_properties:
+      doc_type: { type: string, fixed_value: workbench }
+      title: { type: string }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      split_from: { type: string }
+      combined_from: { type: "list[string]" }
+      superseded_by: { type: string }
+      summary: { type: string, max_length: 200 }
+      project_id: { type: string }
+      created: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      type: { type: string, ref_vocab: type }
+      aliases: { type: "list[string]" }
+      source: { type: string }
+      source_url: { type: string }
+      private: { type: boolean }
+      private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+      created_by: { type: string }
+      updated_by: { type: string }
+      reviewed_by: { type: string, ref_vocab: reviewed_by }
+
+  project:
+    name: 课题域卡片
+    folder_pattern: '^30-Projects/'
+    required_properties:
+      doc_type: { type: string, fixed_value: project }
+      title: { type: string }
+    optional_properties:
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      aliases: { type: "list[string]" }
+      project_id: { type: string }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+
+  index:
+    name: 导航控制台
+    folder_pattern: '10-Index/'
+    required_properties:
+      doc_type: { type: string, fixed_value: index }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      author: { type: string }
+      aliases: { type: "list[string]" }
+
+  ticket:
+    name: 任务工单
+    folder_pattern: '(?:98-Archives/Tickets/|GewuTicket-data/)'
+    required_properties:
+      doc_type: { type: string, fixed_value: ticket }
+      title: { type: string }
+      summary: { type: string, max_length: 200 }
+      status: { type: string, ref_vocab: status }
+      track: { type: string, pattern: '^(SYS|DOC|MSG|TASK|SLIP)$' }
+      tags: { type: "list[string]" }
+      updated: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    optional_properties:
+      ticket_id: { type: string, pattern: '^TICKET-\d{8}T\d{4}-(SYS|DOC|MSG|TASK|SLIP)-[A-Za-z0-9-]+$' }
+      created: { type: string, pattern: '^\d{4}-\d{2}-\d{2}(T.+)?$' }
+      ticket_status: { type: string, ref_vocab: ticket_status }
+      task_key: { type: string }
+      op_id: { type: string }
+      op_kind: { type: string }
+      external_ticket_id: { type: string }
+      related_projects: { type: "list[string]" }
+      project_id: { type: string }
+      created_by: { type: string }
+      to_agent: { type: string }
+      need_human: { type: boolean }
+      ticket_ref: { type: string }

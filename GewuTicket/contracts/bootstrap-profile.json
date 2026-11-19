@@ -1,0 +1,7 @@
+{
+  "app_id": "gewu-ticket",
+  "contracts_dir": "contracts",
+  "mode": "standalone",
+  "schema": "forge.bootstrap-profile/2",
+  "track_integrated": false
+}

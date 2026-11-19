@@ -1,0 +1,12 @@
+{
+  "app_id": "gewu-ticket",
+  "contract_rail": "gewu-domain-app-contract-rail-spec-v1.0.0",
+  "facade_entry": "scripts/facade/app_facade.py",
+  "hidden_core_dir": "scripts/app_core",
+  "out_of_workspace_migration": "bootstrap.py deploy-runtime",
+  "pre_tool_use_guard": "scripts/guard/pre_tool_use_guard.py",
+  "primary_route": "gewu-domain-app-plaintext-py-solution-v1.0.0",
+  "schema": "forge.app-security-profile/1",
+  "security_tier": "plaintext-py",
+  "upgrade_gate": "gewu-domain-app-binary-hybrid-solution-v1.0.0"
+}

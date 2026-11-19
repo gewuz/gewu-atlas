@@ -1,0 +1,46 @@
+{
+  "app_id": "gewu-ticket",
+  "backup_supported": true,
+  "cli_alias": "ticket",
+  "directory": "GewuTicket",
+  "facade_delegate": "scripts/ticket/ticket_cli.py",
+  "routes": {
+    "backup": {
+      "description": "Domain 0600 encrypted state and data-dir backup/verify/restore",
+      "isolation": "vault-exec",
+      "script": "scripts/distribution/app_backup.py"
+    },
+    "boot": {
+      "description": "Domain bootstrap inspect/plan/apply/receipt/init-runtime/deploy-runtime",
+      "isolation": "standard",
+      "script": "bootstrap.py"
+    },
+    "facade": {
+      "description": "Domain micro-interactions & stdin short-handle facade",
+      "isolation": "vault-exec",
+      "script": "scripts/facade/app_facade.py"
+    },
+    "manage": {
+      "description": "Manage Domain rules/skills/scripts/contracts/AGENTS.md and batch commit",
+      "isolation": "standard",
+      "script": "scripts/manage/app_manage.py"
+    },
+    "test": {
+      "description": "Domain smoke/security/staging/release scenario test runner",
+      "isolation": "standard",
+      "script": "scripts/checks/run_app_tests.py"
+    },
+    "ticket": {
+      "description": "Domain ticket volume, dual-review & shadow overlay CLI",
+      "isolation": "standard",
+      "script": "scripts/ticket/ticket_cli.py"
+    },
+    "validate-commit": {
+      "description": "Domain Git commit message contract & leak validator",
+      "isolation": "standard",
+      "script": "scripts/git/validate_commit.py"
+    }
+  },
+  "schema": "gewu.cli-manifest/1",
+  "subflows": {}
+}

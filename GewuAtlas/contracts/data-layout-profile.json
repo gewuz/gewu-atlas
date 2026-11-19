@@ -1,0 +1,11 @@
+{
+  "app_id": "gewu-atlas",
+  "backup_include_data_dirs": true,
+  "data_dirs": [],
+  "directory": "GewuAtlas",
+  "dist_include_data_structure": false,
+  "principle": "app-and-data-separated-recommended-not-forced",
+  "schema": "forge.data-layout-profile/1",
+  "separation": "separated",
+  "track_integrated": false
+}

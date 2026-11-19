@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Unified CLI gateway (`./gewu <domain> <cmd>`) for GewuForge & generated Domains.
+
+Minimal TCB dispatcher (Python 3.9+ stdlib only):
+- Declaratively resolves Domain routes from `<Domain>/connect/cli-manifest.json` (fallback `<Domain>/contracts/cli-manifest.json`).
+- Refuses ambiguous aliases (`E_AMBIGUOUS_DOMAIN_ALIAS`, exit 2).
+- Sanitizes Python/dynamic-linker injection environment variables.
+- Dispatches strictly via `shell=False` and `python3 -I -B` (zero eval/import).
+- Swallows unexpected internal errors into sanitized Guard Capsule JSON (exit 2).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, List, Optional, Tuple
+
+_STRIP_ENV_EXACT = frozenset(
+    {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "PYTHONINSPECT",
+        "PYTHONWARNINGS",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    }
+)
+_SKIP_SCAN_DIRS = frozenset({"GewuTrack", "instances", "build", "dist", "logs", "backups"})
+
+
+def _guard_error(code: str, message: str, **extra: Any) -> int:
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "status": "GUARD: HALTED",
+        "error_code": code,
+        "message": message,
+        "exit_code": 2,
+    }
+    payload.update(extra)
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return 2
+
+
+def _emit_ok(payload: Dict[str, Any]) -> int:
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return 0
+
+
+def _check_rel_no_symlink(base_dir: Path, rel_path: PurePosixPath) -> Path:
+    cur = base_dir.resolve()
+    for part in rel_path.parts:
+        cur = cur / part
+        if cur.exists() and cur.is_symlink():
+            raise ValueError(f"linked path refused: {rel_path}")
+    return cur
+
+
+def _safe_domain_script(domain_dir: Path, rel_script: str) -> Path:
+    rel = PurePosixPath(rel_script)
+    if (
+        not rel_script
+        or rel_script != str(rel)
+        or rel.is_absolute()
+        or any(part in ("..", ".", "") for part in rel.parts)
+        or "\\" in rel_script
+        or ":" in rel_script
+        or "\x00" in rel_script
+    ):
+        raise ValueError(f"unsafe route target path: {rel_script!r}")
+    candidate = _check_rel_no_symlink(domain_dir, rel)
+    dom_res = domain_dir.resolve()
+    cand_res = candidate.resolve()
+    if dom_res not in cand_res.parents or not candidate.is_file():
+        raise ValueError(f"route target missing or escapes domain root: {rel_script}")
+    return candidate
+
+
+def _sanitized_env() -> Dict[str, str]:
+    clean: Dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k in _STRIP_ENV_EXACT or k.startswith("DYLD_"):
+            continue
+        clean[k] = v
+    return clean
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError("linked workspace/domain path refused")
+    return json.loads(path.read_text("utf-8"))
+
+
+def _legacy_manifest_for_dir(dom_dir: Path) -> Optional[Dict[str, Any]]:
+    app_file = dom_dir / "app.json"
+    if app_file.is_file():
+        meta = _load_json(app_file)
+        app_id = str(meta.get("app_id", dom_dir.name.lower()))
+        routes: Dict[str, Dict[str, str]] = {}
+        candidates = {
+            "facade": ("scripts/facade/app_facade.py", "vault-exec", "Domain facade"),
+            "boot": ("bootstrap.py", "standard", "Domain bootstrap"),
+            "manage": ("scripts/manage/app_manage.py", "standard", "Domain system management"),
+            "dist": ("scripts/distribution/app_dist.py", "standard", "Domain distribution bundler"),
+            "install-dist": ("scripts/distribution/install_dist.py", "standard", "Multi-domain installer"),
+            "backup": ("scripts/distribution/app_backup.py", "vault-exec", "Domain encrypted backup"),
+            "test": ("scripts/checks/run_app_tests.py", "standard", "Domain scenario tests"),
+            "validate-commit": ("scripts/git/validate_commit.py", "standard", "Commit contract validator"),
+        }
+        for cmd, (rel, iso, desc) in candidates.items():
+            if (dom_dir / rel).is_file():
+                routes[cmd] = {"script": rel, "isolation": iso, "description": desc}
+        return {
+            "schema": "gewu.cli-manifest/1",
+            "cli_alias": app_id,
+            "app_id": app_id,
+            "directory": dom_dir.name,
+            "backup_supported": "backup" in routes,
+            "routes": routes,
+            "subflows": {},
+            "legacy_fallback": True,
+        }
+    return None
+
+
+def _inspect_domain(dom_dir: Path) -> Optional[Dict[str, Any]]:
+    if not dom_dir.is_dir() or dom_dir.is_symlink():
+        return None
+    manifest_file = next(
+        (p for p in (dom_dir / "contracts/cli-manifest.json", dom_dir / "connect/cli-manifest.json") if p.is_file()),
+        None,
+    )
+    manifest: Optional[Dict[str, Any]] = None
+    if manifest_file is not None:
+        manifest = _load_json(manifest_file)
+        if manifest.get("schema") != "gewu.cli-manifest/1":
+            raise ValueError(f"invalid cli-manifest schema in {dom_dir.name}")
+    else:
+        manifest = _legacy_manifest_for_dir(dom_dir)
+    if manifest is None:
+        return None
+
+    if manifest.get("directory", dom_dir.name) != dom_dir.name:
+        raise ValueError(f"cli-manifest directory does not match actual domain: {dom_dir.name}")
+
+    sec_tier = "forge-core" if dom_dir.name == "GewuForge" else "plaintext-py"
+    sec_file = next(
+        (p for p in (dom_dir / "contracts/app-security-profile.json", dom_dir / "connect/app-security-profile.json") if p.is_file()),
+        None,
+    )
+    if sec_file is not None:
+        sec_tier = str(_load_json(sec_file).get("security_tier", sec_tier))
+
+    return {
+        "path": dom_dir,
+        "directory": dom_dir.name,
+        "app_id": str(manifest.get("app_id", dom_dir.name.lower())),
+        "cli_alias": str(manifest.get("cli_alias", dom_dir.name.lower())),
+        "security_tier": sec_tier,
+        "backup_supported": bool(manifest.get("backup_supported", True)),
+        "facade_delegate": str(manifest["facade_delegate"]) if manifest.get("facade_delegate") else None,
+        "facade_timeout_seconds": manifest.get("facade_timeout_seconds"),
+        "peer_domains": [str(x).strip() for x in (manifest.get("peer_domains") or []) if str(x).strip()],
+        "routes": dict(manifest.get("routes", {})),
+        "subflows": dict(manifest.get("subflows", {})),
+    }
+
+
+def _discover_domains(workspace_root: Path) -> List[Dict[str, Any]]:
+    domains: List[Dict[str, Any]] = []
+    if not workspace_root.is_dir():
+        return domains
+    for child in sorted(workspace_root.iterdir()):
+        if not child.is_dir() or child.is_symlink():
+            continue
+        if child.name.startswith(".") or child.name in _SKIP_SCAN_DIRS:
+            continue
+        info = _inspect_domain(child)
+        if info is not None:
+            domains.append(info)
+    return domains
+
+
+def _resolve_domain(
+    domains: List[Dict[str, Any]],
+    token: str,
+    *,
+    not_found_code: str = "E_UNKNOWN_DOMAIN",
+) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+    key = token.strip().casefold()
+    if not key:
+        return None, _guard_error("E_INVALID_DOMAIN", "domain selector cannot be empty")
+    matches: Dict[str, Dict[str, Any]] = {}
+    matched_fields: Dict[str, List[str]] = {}
+    for domain in domains:
+        fields = [field for field in ("cli_alias", "app_id", "directory") if domain[field].casefold() == key]
+        if fields:
+            identity = str(domain["path"].resolve())
+            matches[identity] = domain
+            matched_fields[identity] = fields
+    if len(matches) > 1:
+        return None, _guard_error(
+            "E_AMBIGUOUS_DOMAIN_ALIAS",
+            f"domain selector '{token}' matched multiple directories across cli_alias/app_id/directory",
+            candidates=[{"directory": d["directory"], "cli_alias": d["cli_alias"], "app_id": d["app_id"], "matched_fields": matched_fields[str(d["path"].resolve())]} for d in matches.values()],
+            matched_directories=sorted(d["directory"] for d in matches.values()),
+        )
+    if matches:
+        return next(iter(matches.values())), None
+    return None, _guard_error(
+        not_found_code,
+        f"unknown domain '{token}'",
+        requested_peer=token if not_found_code == "E_PEER_DOMAIN_MISSING" else None,
+        available_domains=[{"cli_alias": d["cli_alias"], "app_id": d["app_id"], "directory": d["directory"]} for d in domains],
+    )
+
+
+def _detect_context() -> Tuple[Path, Optional[Dict[str, Any]]]:
+    """Detect whether invoked from inside a Domain (`<Domain>/gewu`), Forge source, or workspace root."""
+    if Path(__file__).is_symlink():
+        raise ValueError("linked gateway binary refused")
+    script_path = Path(__file__).resolve()
+    here = script_path.parent
+    if (here / "contracts/cli-manifest.json").is_file() or (here / "connect/cli-manifest.json").is_file() or (here / "app.json").is_file():
+        local = _inspect_domain(here)
+        if local is not None:
+            return here.parent, local
+    # Invoked directly via `GewuForge/scripts/facade/gewu_gateway.py`
+    if (
+        script_path.parent.name == "facade"
+        and script_path.parent.parent.name == "scripts"
+        and script_path.parents[2].name == "GewuForge"
+    ):
+        return script_path.parents[3], None
+    return here, None
+
+
+def _domain_matches_selector(domain: Dict[str, Any], token: str) -> bool:
+    key = token.strip().casefold()
+    return any(domain[field].casefold() == key for field in ("cli_alias", "app_id", "directory"))
+
+
+def _dispatch_peer_call(domains: List[Dict[str, Any]], args: List[str]) -> int:
+    caller_tok: Optional[str] = None
+    target_tok: Optional[str] = None
+    forwarded: List[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "--":
+            forwarded.extend(args[i + 1 :])
+            break
+        if tok == "--from" and i + 1 < len(args):
+            caller_tok = args[i + 1]
+            i += 2
+            continue
+        if tok == "--to" and i + 1 < len(args):
+            target_tok = args[i + 1]
+            i += 2
+            continue
+        forwarded.extend(args[i:])
+        break
+
+    if not target_tok:
+        return _guard_error(
+            "E_MISSING_ARGS",
+            "usage: ./gewu peer-call --to <target_domain> [--from <caller_domain>] -- <cmd_or_flags...>",
+        )
+    target, err_code = _resolve_domain(domains, target_tok, not_found_code="E_PEER_DOMAIN_MISSING")
+    if target is None:
+        return err_code if err_code is not None else 2
+
+    if caller_tok:
+        caller, caller_err = _resolve_domain(domains, caller_tok)
+        if caller is None:
+            return caller_err if caller_err is not None else 2
+        declared = caller.get("peer_domains") or []
+        if declared and not any(_domain_matches_selector(target, sel) for sel in declared):
+            return _guard_error(
+                "E_PEER_NOT_DECLARED",
+                f"domain '{caller['cli_alias']}' did not declare '{target['cli_alias']}' in cli-manifest peer_domains",
+                caller=caller["cli_alias"],
+                target=target["cli_alias"],
+                declared_peers=declared,
+            )
+
+    if not forwarded:
+        return _guard_error(
+            "E_MISSING_COMMAND",
+            f"peer-call to '{target['cli_alias']}' requires command or --action flags after '--'",
+        )
+    return _dispatch_domain_command(target, forwarded, domains=domains)
+
+
+def _dispatch_domain_command(
+    domain: Dict[str, Any],
+    args: List[str],
+    domains: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    if not args:
+        return _guard_error(
+            "E_MISSING_COMMAND",
+            f"missing command for domain '{domain['cli_alias']}'",
+            hint=f"./gewu {domain['cli_alias']} capabilities",
+        )
+
+    raw_cmd = args[0]
+    use_delegate = False
+    if raw_cmd in ("-h", "--help", "help") and len(args) == 1:
+        raw_cmd = "capabilities"
+        rest: List[str] = []
+    elif raw_cmd.startswith("--"):
+        # Shortcut syntax: `./gewu <domain> --template|--action ...` -> facade_delegate (if declared) or facade
+        rest = list(args)
+        if domain.get("facade_delegate"):
+            use_delegate = True
+        raw_cmd = "facade"
+    else:
+        rest = list(args[1:])
+
+    if raw_cmd == "capabilities":
+        cap_payload: Dict[str, Any] = {
+            "schema": "gewu.cli-capabilities/1",
+            "ok": True,
+            "cli_alias": domain["cli_alias"],
+            "app_id": domain["app_id"],
+            "directory": domain["directory"],
+            "security_tier": domain["security_tier"],
+            "backup_supported": domain["backup_supported"],
+            "commands": sorted([*domain["routes"].keys(), *(["flow"] if domain["subflows"] else []), "capabilities"]),
+            "routes": {k: {"isolation": v.get("isolation", "standard"), "description": v.get("description", "")} for k, v in sorted(domain["routes"].items())},
+            "subflows": sorted(domain["subflows"].keys()),
+        }
+        if domain.get("facade_delegate"):
+            cap_payload["facade_delegate"] = domain["facade_delegate"]
+        if domain.get("facade_timeout_seconds") is not None:
+            cap_payload["facade_timeout_seconds"] = domain["facade_timeout_seconds"]
+        if domain.get("peer_domains"):
+            peer_info: List[Dict[str, Any]] = []
+            for ptok in domain["peer_domains"]:
+                matched = next((d for d in (domains or []) if _domain_matches_selector(d, ptok)), None)
+                peer_info.append(
+                    {
+                        "selector": ptok,
+                        "available": matched is not None,
+                        "cli_alias": matched["cli_alias"] if matched else None,
+                    }
+                )
+            cap_payload["peer_domains"] = peer_info
+        return _emit_ok(cap_payload)
+
+    if raw_cmd == "backup" and not domain["backup_supported"]:
+        return _guard_error(
+            "E_UNSUPPORTED_FOR_FORGE",
+            "GewuForge does not carry user vault data; backup is only supported on generated Domains",
+            domain=domain["directory"],
+        )
+
+    if raw_cmd == "flow":
+        if not domain["subflows"]:
+            return _guard_error("E_UNKNOWN_COMMAND", f"domain '{domain['cli_alias']}' does not declare subflows")
+        if not rest:
+            return _guard_error("E_MISSING_SUBFLOW", "flow requires a subflow name", available_subflows=sorted(domain["subflows"].keys()))
+        subflow = rest[0]
+        if subflow not in domain["subflows"]:
+            return _guard_error("E_UNKNOWN_SUBFLOW", f"unknown subflow '{subflow}'", available_subflows=sorted(domain["subflows"].keys()))
+        target = _safe_domain_script(domain["path"], domain["subflows"][subflow])
+        forwarded = rest[1:]
+    else:
+        if use_delegate and domain.get("facade_delegate"):
+            target = _safe_domain_script(domain["path"], str(domain["facade_delegate"]))
+            forwarded = rest
+        else:
+            route = domain["routes"].get(raw_cmd)
+            if route is None:
+                return _guard_error(
+                    "E_UNKNOWN_COMMAND",
+                    f"unknown command '{raw_cmd}' for domain '{domain['cli_alias']}'",
+                    available_commands=sorted([*domain["routes"].keys(), *(["flow"] if domain["subflows"] else []), "capabilities"]),
+                )
+            target = _safe_domain_script(domain["path"], route["script"])
+            forwarded = rest
+
+    if use_delegate or raw_cmd == "facade":
+        raw_t = domain.get("facade_timeout_seconds")
+        timeout_sec = max(5, min(int(raw_t), 600)) if raw_t is not None else 120
+    elif raw_cmd in ("test", "dist", "install-dist", "boot"):
+        timeout_sec = 300
+    else:
+        timeout_sec = 120
+
+    try:
+        proc = subprocess.run(
+            [_runtime_python(domain["path"].parent), "-I", "-X", "utf8", "-B", str(target), *forwarded],
+            env=_sanitized_env(),
+            check=False,
+            timeout=timeout_sec,
+        )
+        return proc.returncode
+    except subprocess.TimeoutExpired:
+        return _guard_error(
+            "E_GATEWAY_TIMEOUT",
+            f"domain command '{raw_cmd}' timed out after {timeout_sec}s",
+            domain=domain["directory"],
+            command=raw_cmd,
+        )
+
+
+def _runtime_python(workspace_root: Path) -> str:
+    """Use the locally provisioned workspace environment for every public route."""
+    env = workspace_root / ".runtime" / "install-env" / "venv"
+    if not env.exists() and not (workspace_root / "INSTALL_RECEIPT.json").is_file():
+        return sys.executable
+    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not (env / "pyvenv.cfg").is_file() or not python.is_file():
+        raise ValueError("installed Python environment unavailable; repair the local installation")
+    return str(python)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        workspace_root, local_domain = _detect_context()
+        if not args:
+            return _guard_error(
+                "E_MISSING_ARGS",
+                "usage: ./gewu <domain> <cmd> [args...] or ./gewu list-domains",
+            )
+
+        if args[0] == "list-domains":
+            domains = _discover_domains(workspace_root)
+            return _emit_ok(
+                {
+                    "schema": "gewu.cli-domains/1",
+                    "ok": True,
+                    "workspace_root": ".",
+                    "domains": [
+                        {
+                            "cli_alias": d["cli_alias"],
+                            "app_id": d["app_id"],
+                            "directory": d["directory"],
+                            "security_tier": d["security_tier"],
+                            "backup_supported": d["backup_supported"],
+                        }
+                        for d in domains
+                    ],
+                }
+            )
+
+        if local_domain is not None:
+            domains = _discover_domains(workspace_root)
+            first = args[0]
+            if first == "peer-call":
+                return _dispatch_peer_call(domains, args[1:])
+            local_tokens = {
+                local_domain["cli_alias"].casefold(),
+                local_domain["app_id"].casefold(),
+                local_domain["directory"].casefold(),
+            }
+            if first.casefold() in local_tokens and len(args) >= 2:
+                return _dispatch_domain_command(local_domain, args[1:], domains=domains)
+            return _dispatch_domain_command(local_domain, args, domains=domains)
+
+        if args[0] in ("-h", "--help", "help"):
+            domains = _discover_domains(workspace_root)
+            return _emit_ok(
+                {
+                    "schema": "gewu.cli-gateway/1",
+                    "ok": True,
+                    "usage": [
+                        "./gewu list-domains",
+                        "./gewu <domain> capabilities",
+                        "./gewu <domain> <cmd> [args...]",
+                        "./gewu <domain> --action ... | --template",
+                        "./gewu peer-call --to <domain> [--from <domain>] -- <cmd|args...>",
+                        "./gewu install-dist <check-env|install> ...",
+                    ],
+                    "discovered_aliases": [d["cli_alias"] for d in domains],
+                }
+            )
+
+        domains = _discover_domains(workspace_root)
+
+        if args[0] == "peer-call":
+            return _dispatch_peer_call(domains, args[1:])
+
+        # Root-level install-dist shortcut for deploying dist archives into a fresh root.
+        if args[0] == "install-dist":
+            forge = next((d for d in domains if d["app_id"] == "gewuforge" and "install-dist" in d["routes"]), None)
+            chosen = forge or next((d for d in domains if "install-dist" in d["routes"]), None)
+            if chosen is None:
+                return _guard_error("E_INSTALLER_NOT_FOUND", "no domain providing install-dist found under workspace root")
+            return _dispatch_domain_command(chosen, args, domains=domains)
+
+        domain, err_code = _resolve_domain(domains, args[0])
+        if domain is None:
+            return err_code if err_code is not None else 2
+        return _dispatch_domain_command(domain, args[1:], domains=domains)
+    except ValueError as exc:
+        # Only bounded, explicitly authored diagnostics may reach the public capsule.
+        message = "invalid gateway configuration; check public domain manifests"
+        if str(exc).startswith("cli-manifest directory does not match"):
+            message = "cli-manifest directory does not match actual domain"
+        elif str(exc) == "installed Python environment unavailable; repair the local installation":
+            message = str(exc)
+        return _guard_error("E_GATEWAY_INTERNAL", message)
+    except Exception:  # noqa: BLE001
+        return _guard_error("E_GATEWAY_INTERNAL", "gateway execution failed; check local runtime and public domain configuration")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

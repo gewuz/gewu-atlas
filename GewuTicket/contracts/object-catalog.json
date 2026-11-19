@@ -1,0 +1,299 @@
+{
+  "app_id": "gewu-ticket",
+  "objects": [
+    {
+      "files": [
+        "rules/rule-ticket-volume-and-ipc.md"
+      ],
+      "id": "ticket-volume-and-ipc-rule",
+      "kind": "rule",
+      "references": []
+    },
+    {
+      "files": [
+        "contracts/ticket-state-and-schema-v1.md"
+      ],
+      "id": "ticket-state-and-schema-v1",
+      "kind": "contract",
+      "references": [
+        "ticket-volume-and-ipc-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/ticket/ticket_statemachine.py",
+        "scripts/ticket/ticket_volume.py"
+      ],
+      "id": "ticket-volume-engine",
+      "kind": "operator",
+      "references": [
+        "ticket-state-and-schema-v1"
+      ]
+    },
+    {
+      "files": [
+        "scripts/ticket/ticket_cli.py"
+      ],
+      "id": "ticket-cli-facade",
+      "kind": "operator",
+      "references": [
+        "ticket-volume-engine",
+        "ticket-state-and-schema-v1"
+      ]
+    },
+    {
+      "files": [
+        "skills/ticket-create/SKILL.md"
+      ],
+      "id": "ticket-create",
+      "kind": "skill",
+      "references": [
+        "ticket-cli-facade",
+        "ticket-volume-and-ipc-rule"
+      ]
+    },
+    {
+      "files": [
+        "skills/ticket-triage/SKILL.md"
+      ],
+      "id": "ticket-triage",
+      "kind": "skill",
+      "references": [
+        "ticket-cli-facade",
+        "ticket-volume-and-ipc-rule"
+      ]
+    },
+    {
+      "files": [
+        "skills/ticket-flow/SKILL.md"
+      ],
+      "id": "ticket-flow",
+      "kind": "skill",
+      "references": [
+        "ticket-cli-facade",
+        "ticket-state-and-schema-v1"
+      ]
+    },
+    {
+      "files": [
+        "skills/ticket-gate/SKILL.md"
+      ],
+      "id": "ticket-gate",
+      "kind": "skill",
+      "references": [
+        "ticket-cli-facade",
+        "ticket-state-and-schema-v1"
+      ]
+    },
+    {
+      "files": [
+        "skills/ticket-orchestrator/SKILL.md"
+      ],
+      "id": "ticket-orchestrator",
+      "kind": "skill",
+      "references": [
+        "ticket-create",
+        "ticket-triage",
+        "ticket-flow",
+        "ticket-gate",
+        "ticket-volume-and-ipc-rule"
+      ]
+    },
+    {
+      "files": [
+        "rules/rule-app-contract-rail.md"
+      ],
+      "id": "app-contract-rail-rule",
+      "kind": "rule",
+      "references": [
+        "app-engineering-baseline"
+      ]
+    },
+    {
+      "files": [
+        "rules/rule-testing-strategy.md"
+      ],
+      "id": "app-testing-strategy-rule",
+      "kind": "rule",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/app-security-profile.json",
+        "contracts/host-guard-template.json"
+      ],
+      "id": "app-security-profile",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/testing-profile.json"
+      ],
+      "id": "app-testing-profile",
+      "kind": "contract",
+      "references": [
+        "app-testing-strategy-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/data-layout-profile.json"
+      ],
+      "id": "app-data-layout-profile",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/execution-routing-v1.md"
+      ],
+      "id": "app-execution-routing-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/commit-message-v1.md"
+      ],
+      "id": "app-commit-message-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/sys-change-ticket-v1.md"
+      ],
+      "id": "app-sys-change-ticket-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/markdown-formatting-v1.md"
+      ],
+      "id": "app-markdown-formatting-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/app_core/__init__.py",
+        "scripts/app_core/app_worker.py",
+        "scripts/app_core/capsule.py",
+        "scripts/app_core/param_normalizer.py",
+        "scripts/app_core/vault_store.py"
+      ],
+      "id": "app-core-runtime",
+      "kind": "operator",
+      "references": [
+        "app-security-profile"
+      ]
+    },
+    {
+      "files": [
+        "scripts/distribution/app_backup.py",
+        "scripts/distribution/app_dist.py",
+        "scripts/distribution/archive_io.py",
+        "scripts/distribution/install_dist.py"
+      ],
+      "id": "app-dist-backup",
+      "kind": "operator",
+      "references": [
+        "app-data-layout-profile",
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/manage/app_manage.py"
+      ],
+      "id": "app-domain-manage",
+      "kind": "operator",
+      "references": [
+        "app-contract-rail-rule",
+        "app-commit-message-contract",
+        "app-testing-profile"
+      ]
+    },
+    {
+      "files": [
+        "contracts/cli-manifest.json"
+      ],
+      "id": "app-cli-manifest",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/facade/app_facade.py",
+        "scripts/guard/pre_tool_use_guard.py",
+        "scripts/guard/delivery_harness.py",
+        "scripts/checks/run_app_tests.py",
+        "scripts/git/validate_commit.py"
+      ],
+      "id": "app-facade-entry",
+      "kind": "operator",
+      "references": [
+        "app-core-runtime",
+        "app-dist-backup",
+        "app-domain-manage",
+        "app-cli-manifest",
+        "app-contract-rail-rule",
+        "app-testing-strategy-rule",
+        "app-testing-profile",
+        "app-execution-routing-contract",
+        "app-commit-message-contract",
+        "app-sys-change-ticket-contract",
+        "app-markdown-formatting-contract"
+      ]
+    },
+    {
+      "id": "app-engineering-baseline",
+      "kind": "contract",
+      "files": [
+        "contracts/app-engineering-baseline-v1.md"
+      ],
+      "references": []
+    },
+    {
+      "id": "domain-description",
+      "kind": "contract",
+      "files": [
+        "app.json"
+      ],
+      "references": []
+    },
+    {
+      "files": [
+        "scripts/ticket/ticket_usecase.py",
+        "usecase-for-agent/README.md",
+        "usecase-for-agent/UC-01-sys-change-and-dual-review.md",
+        "usecase-for-agent/UC-02-shadow-mount-and-readonly-triage.md",
+        "usecase-for-agent/UC-03-breaker-capsule-and-zero-leak.md"
+      ],
+      "id": "ticket-usecase-playbook",
+      "kind": "operator",
+      "references": [
+        "app-engineering-baseline"
+      ]
+    }
+  ],
+  "schema": "forge.object-catalog/1"
+}

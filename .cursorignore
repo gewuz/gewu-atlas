@@ -1,0 +1,5 @@
+Volumes/
+**/.local/
+**/.runtime/
+**/instances/
+**/app_core/

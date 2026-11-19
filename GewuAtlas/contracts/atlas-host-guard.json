@@ -1,0 +1,31 @@
+{
+  "schema": "gewu.atlas-host-guard/1",
+  "permissions": {
+    "allow": [
+      "Bash(./gewu atlas *)",
+      "Bash(python3 -I -B ./gewu atlas *)"
+    ],
+    "deny": [
+      "Read(./Volumes/**)",
+      "Read(Volumes/**)",
+      "Grep(./Volumes/**)",
+      "Glob(./Volumes/**)",
+      "Read(./GewuAtlas/.local/**)",
+      "Read(./GewuAtlas/scripts/app_core/**)",
+      "Read(./.runtime/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -B GewuAtlas/scripts/storage/atlas_volume_guard.py"
+          }
+        ]
+      }
+    ]
+  }
+}

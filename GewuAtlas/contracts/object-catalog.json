@@ -1,0 +1,783 @@
+{
+  "app_id": "gewu-atlas",
+  "objects": [
+    {
+      "id": "rule-arch-workflows-ipc",
+      "kind": "rule",
+      "files": [
+        "rules/rule-arch-workflows-ipc.md"
+      ],
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "id": "rule-arch-multi-agent-collab",
+      "kind": "rule",
+      "files": [
+        "rules/rule-arch-multi-agent-collab.md"
+      ],
+      "references": [
+        "rule-arch-workflows-ipc"
+      ]
+    },
+    {
+      "id": "rule-core-state-identity",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-state-identity.md"
+      ],
+      "references": [
+        "rule-arch-workflows-ipc"
+      ]
+    },
+    {
+      "id": "rule-core-vfs",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-vfs.md"
+      ],
+      "references": [
+        "rule-core-state-identity"
+      ]
+    },
+    {
+      "id": "rule-core-linking",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-linking.md"
+      ],
+      "references": [
+        "rule-core-vfs"
+      ]
+    },
+    {
+      "id": "rule-core-schema",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-schema.md"
+      ],
+      "references": [
+        "rule-core-state-identity"
+      ]
+    },
+    {
+      "id": "rule-core-methodology",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-methodology.md"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema"
+      ]
+    },
+    {
+      "id": "rule-core-formatting-tiers",
+      "kind": "rule",
+      "files": [
+        "rules/rule-core-formatting-tiers.md"
+      ],
+      "references": []
+    },
+    {
+      "files": [
+        "scripts/checks/atlas_vault_selftest.py",
+        "scripts/storage/vault_kek_store.py",
+        "scripts/storage/vault_volume.py"
+      ],
+      "id": "vault-kek-engine",
+      "kind": "operator",
+      "references": [
+        "rule-core-vfs"
+      ]
+    },
+    {
+      "files": [
+        "scripts/facade/atlas_cli.py",
+        "scripts/facade/atlas_harness_state.py"
+      ],
+      "id": "atlas-cli-facade",
+      "kind": "operator",
+      "references": [
+        "rule-core-vfs",
+        "rule-core-state-identity",
+        "rule-core-linking",
+        "vault-kek-engine",
+        "atlas-note-engine"
+      ]
+    },
+    {
+      "files": [
+        "rules/rule-app-contract-rail.md"
+      ],
+      "id": "app-contract-rail-rule",
+      "kind": "rule",
+      "references": [
+        "app-engineering-baseline"
+      ]
+    },
+    {
+      "files": [
+        "rules/rule-testing-strategy.md"
+      ],
+      "id": "app-testing-strategy-rule",
+      "kind": "rule",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/app-security-profile.json",
+        "contracts/host-guard-template.json"
+      ],
+      "id": "app-security-profile",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/testing-profile.json"
+      ],
+      "id": "app-testing-profile",
+      "kind": "contract",
+      "references": [
+        "app-testing-strategy-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/data-layout-profile.json"
+      ],
+      "id": "app-data-layout-profile",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/execution-routing-v1.md"
+      ],
+      "id": "app-execution-routing-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/commit-message-v1.md"
+      ],
+      "id": "app-commit-message-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/sys-change-ticket-v1.md"
+      ],
+      "id": "app-sys-change-ticket-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "contracts/markdown-formatting-v1.md"
+      ],
+      "id": "app-markdown-formatting-contract",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/app_core/__init__.py",
+        "scripts/app_core/app_worker.py",
+        "scripts/app_core/capsule.py",
+        "scripts/app_core/param_normalizer.py",
+        "scripts/app_core/vault_store.py"
+      ],
+      "id": "app-core-runtime",
+      "kind": "operator",
+      "references": [
+        "app-security-profile"
+      ]
+    },
+    {
+      "files": [
+        "scripts/distribution/app_backup.py",
+        "scripts/distribution/app_dist.py",
+        "scripts/distribution/archive_io.py",
+        "scripts/distribution/install_dist.py"
+      ],
+      "id": "app-dist-backup",
+      "kind": "operator",
+      "references": [
+        "app-data-layout-profile",
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/manage/app_manage.py"
+      ],
+      "id": "app-domain-manage",
+      "kind": "operator",
+      "references": [
+        "app-contract-rail-rule",
+        "app-commit-message-contract",
+        "app-testing-profile"
+      ]
+    },
+    {
+      "files": [
+        "contracts/cli-manifest.json"
+      ],
+      "id": "app-cli-manifest",
+      "kind": "contract",
+      "references": [
+        "app-contract-rail-rule"
+      ]
+    },
+    {
+      "files": [
+        "scripts/facade/app_facade.py",
+        "scripts/guard/pre_tool_use_guard.py",
+        "scripts/checks/run_app_tests.py",
+        "scripts/git/validate_commit.py"
+      ],
+      "id": "app-facade-entry",
+      "kind": "operator",
+      "references": [
+        "app-core-runtime",
+        "app-dist-backup",
+        "app-domain-manage",
+        "app-cli-manifest",
+        "app-contract-rail-rule",
+        "app-testing-strategy-rule",
+        "app-testing-profile",
+        "app-execution-routing-contract",
+        "app-commit-message-contract",
+        "app-sys-change-ticket-contract",
+        "app-markdown-formatting-contract"
+      ]
+    },
+    {
+      "id": "atlas-host-guard",
+      "kind": "contract",
+      "files": [
+        "contracts/atlas-host-guard.json"
+      ],
+      "references": [
+        "rule-core-vfs"
+      ]
+    },
+    {
+      "id": "atlas-volume-guard",
+      "kind": "operator",
+      "files": [
+        "scripts/storage/atlas_volume_guard.py"
+      ],
+      "references": [
+        "rule-core-vfs",
+        "atlas-host-guard"
+      ]
+    },
+    {
+      "id": "atlas-note-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_yamlmini.py",
+        "scripts/facade/atlas_domain_scope.py",
+        "scripts/storage/note_kek_store.py",
+        "scripts/storage/note_index_cache.py",
+        "scripts/notes/atlas_note_engine.py",
+        "scripts/collab/ticket_bridge.py",
+        "scripts/checks/atlas_note_selftest.py",
+        "scripts/notes/atlas_usecase_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "vault-kek-engine"
+      ]
+    },
+    {
+      "id": "atlas-note",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-note/SKILL.md"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-cli-facade"
+      ]
+    },
+    {
+      "id": "atlas-qa",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-qa/SKILL.md"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-cli-facade",
+        "rule-arch-workflows-ipc"
+      ]
+    },
+    {
+      "id": "atlas-style",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-style/SKILL.md"
+      ],
+      "references": [
+        "app-markdown-formatting-contract",
+        "rule-core-formatting-tiers",
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking"
+      ]
+    },
+    {
+      "id": "atlas-graph-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/pipeline/atlas_graph_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-workflow-engine"
+      ]
+    },
+    {
+      "id": "atlas-project-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/storage/project_kek_store.py",
+        "scripts/pipeline/atlas_project_engine.py"
+      ],
+      "references": [
+        "rule-core-vfs",
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "atlas-note-engine"
+      ]
+    },
+    {
+      "id": "atlas-workflow-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_md_normalizer.py",
+        "scripts/pipeline/atlas_extractor_engine.py",
+        "scripts/pipeline/atlas_workflow_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-project-engine"
+      ]
+    },
+    {
+      "id": "atlas-project",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-project/SKILL.md"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-vfs",
+        "atlas-cli-facade",
+        "rule-arch-workflows-ipc",
+        "rule-core-methodology"
+      ]
+    },
+    {
+      "id": "atlas-fmt-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/pipeline/atlas_fmt_engine.py",
+        "scripts/converters/__init__.py",
+        "scripts/converters/core/__init__.py",
+        "scripts/converters/core/common.py",
+        "scripts/converters/core/project.py",
+        "scripts/converters/core/context.py",
+        "scripts/converters/archive_month.py",
+        "scripts/converters/md_table.py",
+        "scripts/converters/heading_resolver.py",
+        "scripts/converters/chunk_window.py",
+        "scripts/converters/md_normalizer.py",
+        "scripts/converters/mermaid_check.py",
+        "scripts/converters/note_refiner.py",
+        "scripts/converters/docx_converter.py",
+        "scripts/converters/pptx_converter.py",
+        "scripts/converters/excel_converter.py",
+        "scripts/converters/pdf_converter.py",
+        "scripts/converters/html_converter.py",
+        "scripts/converters/web_converter.py",
+        "scripts/converters/image_converter.py",
+        "scripts/converters/url_ingest_helper.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-project-engine"
+      ]
+    },
+    {
+      "id": "atlas-vfs-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/pipeline/atlas_vfs_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-project-engine"
+      ]
+    },
+    {
+      "id": "atlas-search-slicer-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_search_engine.py",
+        "scripts/pipeline/atlas_slicer_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-project-engine",
+        "atlas-slice-planner"
+      ]
+    },
+    {
+      "id": "atlas-slip-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/collab/atlas_slip_engine.py"
+      ],
+      "references": [
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-vfs",
+        "rule-core-linking",
+        "atlas-note-engine",
+        "atlas-vfs-engine",
+        "atlas-project-engine"
+      ]
+    },
+    {
+      "id": "atlas-change-engine",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_change_engine.py"
+      ],
+      "references": [
+        "rule-core-vfs",
+        "rule-core-state-identity",
+        "rule-core-schema",
+        "rule-core-methodology",
+        "rule-core-linking",
+        "atlas-vfs-engine"
+      ]
+    },
+    {
+      "id": "atlas-consistency-selftest",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/atlas_consistency_selftest.py"
+      ],
+      "references": [
+        "atlas-note-engine",
+        "atlas-project-engine",
+        "atlas-vfs-engine",
+        "atlas-fmt-engine",
+        "atlas-change-engine",
+        "app-domain-manage"
+      ]
+    },
+    {
+      "id": "atlas-domain-test-runner",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/domain_test_runner.py"
+      ],
+      "references": [
+        "app-testing-profile",
+        "app-facade-entry"
+      ]
+    },
+    {
+      "id": "app-engineering-baseline",
+      "kind": "contract",
+      "files": [
+        "contracts/app-engineering-baseline-v1.md"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-metadata-dictionary",
+      "kind": "contract",
+      "files": [
+        "dicts/metadata.yaml"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-fmt-dependencies",
+      "kind": "contract",
+      "files": [
+        "contracts/fmt-dependencies.json"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-fmt-refinement",
+      "kind": "operator",
+      "files": [
+        "scripts/pipeline/atlas_fmt_refine.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-bootstrap",
+      "kind": "operator",
+      "files": [
+        "bootstrap.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-bootstrap-profile",
+      "kind": "contract",
+      "files": [
+        "contracts/bootstrap-profile.json"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-content-boundary-selftest",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/atlas_content_boundary_selftest.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-markdown-slice-selftest",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/atlas_markdown_slice_selftest.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-url-boundary-selftest",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/atlas_url_boundary_selftest.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-vault-context-selftest",
+      "kind": "operator",
+      "files": [
+        "scripts/checks/atlas_vault_context_selftest.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-markdown-blocks",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_markdown_blocks.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-wikilink-tools",
+      "kind": "operator",
+      "files": [
+        "scripts/notes/atlas_wikilink_tools.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-atlas-vault-context",
+      "kind": "operator",
+      "files": [
+        "scripts/storage/atlas_vault_context.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-test-atlas-approval-guards",
+      "kind": "operator",
+      "files": [
+        "tests/test_atlas_approval_guards.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-test-atlas-vault-context",
+      "kind": "operator",
+      "files": [
+        "tests/test_atlas_vault_context.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-test-gewu-atlas-domain",
+      "kind": "operator",
+      "files": [
+        "tests/test_gewu_atlas_domain.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-test-r1-remediation",
+      "kind": "operator",
+      "files": [
+        "tests/test_r1_remediation.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-object-catalog",
+      "kind": "contract",
+      "files": [
+        "contracts/object-catalog.json"
+      ],
+      "references": []
+    },
+    {
+      "id": "migration-app-metadata",
+      "kind": "contract",
+      "files": [
+        "app.json"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-layout-dictionary",
+      "kind": "contract",
+      "files": [
+        "dicts/layout.yaml"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-slice-planner",
+      "kind": "operator",
+      "files": [
+        "scripts/pipeline/atlas_slice_planner.py"
+      ],
+      "references": []
+    },
+    {
+      "id": "atlas-ingest-flow",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-ingest-flow/SKILL.md",
+        "skills/atlas-ingest-flow/references/fmt-docx.md",
+        "skills/atlas-ingest-flow/references/fmt-excel.md",
+        "skills/atlas-ingest-flow/references/fmt-html.md",
+        "skills/atlas-ingest-flow/references/fmt-image.md",
+        "skills/atlas-ingest-flow/references/fmt-md.md",
+        "skills/atlas-ingest-flow/references/fmt-note.md",
+        "skills/atlas-ingest-flow/references/fmt-pdf.md",
+        "skills/atlas-ingest-flow/references/fmt-pptx.md",
+        "skills/atlas-ingest-flow/references/fmt-web.md",
+        "skills/atlas-ingest-flow/references/theory-foundations.md"
+      ],
+      "references": [
+        "rule-arch-workflows-ipc",
+        "rule-core-methodology",
+        "rule-core-state-identity"
+      ]
+    },
+    {
+      "id": "atlas-ops",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-ops/SKILL.md"
+      ],
+      "references": [
+        "rule-arch-multi-agent-collab",
+        "rule-core-vfs"
+      ]
+    },
+    {
+      "id": "atlas-usecase",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-usecase/SKILL.md"
+      ],
+      "summary": "Atlas Usecase playbook CRUD and experience distillation (usecase-for-agent)"
+    },
+    {
+      "id": "atlas-obsidian",
+      "kind": "skill",
+      "files": [
+        "skills/atlas-obsidian/SKILL.md",
+        "skills/atlas-obsidian/references/obsidian-markdown.md",
+        "skills/atlas-obsidian/references/obsidian-bases.md",
+        "skills/atlas-obsidian/references/json-canvas.md",
+        "skills/atlas-obsidian/references/obsidian-dataview.md"
+      ],
+      "references": [
+        "rule-core-linking",
+        "rule-core-vfs",
+        "rule-core-formatting-tiers"
+      ],
+      "summary": "Unified Obsidian open formats and query skill (obsidian-markdown, obsidian-bases, json-canvas, obsidian-dataview)"
+    }
+  ],
+  "schema": "forge.object-catalog/1"
+}

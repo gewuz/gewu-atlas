@@ -1,0 +1,50 @@
+{
+  "app_id": "gewu-atlas",
+  "backup_supported": true,
+  "cli_alias": "atlas",
+  "directory": "GewuAtlas",
+  "facade_delegate": "scripts/facade/atlas_cli.py",
+  "facade_timeout_seconds": 120,
+  "peer_domains": [
+    "ticket"
+  ],
+  "routes": {
+    "atlas": {
+      "description": "GewuAtlas Vault CRUD (KEK), metabolic pipeline and search CLI",
+      "isolation": "standard",
+      "script": "scripts/facade/atlas_cli.py"
+    },
+    "backup": {
+      "description": "Domain 0600 encrypted state and data-dir backup/verify/restore",
+      "isolation": "vault-exec",
+      "script": "scripts/distribution/app_backup.py"
+    },
+    "boot": {
+      "description": "Standalone Atlas runtime inspect/plan/apply/receipt/init-runtime/deploy-runtime",
+      "isolation": "standard",
+      "script": "bootstrap.py"
+    },
+    "facade": {
+      "description": "Domain micro-interactions & stdin short-handle facade",
+      "isolation": "vault-exec",
+      "script": "scripts/facade/app_facade.py"
+    },
+    "manage": {
+      "description": "Manage Domain rules/skills/scripts/contracts/AGENTS.md and batch commit",
+      "isolation": "standard",
+      "script": "scripts/manage/app_manage.py"
+    },
+    "test": {
+      "description": "Domain smoke/security/domain/staging/release testing with exact selection, timing and isolated jobs",
+      "isolation": "standard",
+      "script": "scripts/checks/run_app_tests.py"
+    },
+    "validate-commit": {
+      "description": "Domain Git commit message contract & leak validator",
+      "isolation": "standard",
+      "script": "scripts/git/validate_commit.py"
+    }
+  },
+  "schema": "gewu.cli-manifest/1",
+  "subflows": {}
+}

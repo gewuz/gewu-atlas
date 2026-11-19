@@ -1,0 +1,142 @@
+# ==============================================================================
+# layout.yaml - 格物志 V2 拓扑常量与分形结构字典 (迁移自 116 并适配 GewuAtlas 数据卷隔离)
+# 注意：GewuAtlas 程序代码与运行态独立于 Vault 之外；Vault 内设 90-System/01-Templates 与 90-System/92-Logs
+#       用于存放宿主 Obsidian 模板与审计运行日志；25-Slip 设为 20 序列独立同级舱位。
+# ==============================================================================
+version: "2.3.1"
+updated: "2026-11-17"
+
+# Vault 顶层目录
+top_level:
+  dropzone: "00-DropZone"
+  journal: "05-Journal"
+  index: "10-Index"
+  ai_zone: "20-AI-Zone"
+  projects: "30-Projects"
+  system: "90-System"
+  system_templates: "90-System/01-Templates"
+  system_logs: "90-System/92-Logs"
+  assets: "99-Assets"
+  trash: ".trash"
+
+# 域内分形骨架 (20-AI-Zone 与 30-Projects/{id} 共享)
+domain_skeleton:
+  manifest_prefix: "Manifest-"
+  artifacts: "10-Artifacts"
+  memory: "20-Memory"
+  library: "20-Memory/21-Library"
+  others: "20-Memory/21-Library/95-Others"
+  atomics: "20-Memory/22-Atomics"
+  moc: "20-Memory/23-MOC"
+  slices: "20-Memory/24-Slices"
+  attic: "20-Memory/97-Attic"
+  slip: "25-Slip"
+  workbench: "30-Workbench"
+  workbench_temp: "30-Workbench/91-Temp"
+  workbench_source: "30-Workbench/source"
+  assets: "99-Assets"
+  archives: "99-Assets/98-Archives"
+
+# 懒加载目录（写入时按需创建，不破坏存量 Vault 骨架巡检）
+lazy_dirs:
+  - "25-Slip"
+  - "30-Workbench/source"
+
+# Vault 全库标准骨架（由 vault-create 初始化及 index-sync 增量补齐动态读取）
+vault_skeleton:
+  dirs:
+    - "00-DropZone/91-Temp"
+    - "05-Journal"
+    - "10-Index"
+    - "20-AI-Zone/10-Artifacts"
+    - "20-AI-Zone/20-Memory/21-Library/95-Others"
+    - "20-AI-Zone/20-Memory/22-Atomics"
+    - "20-AI-Zone/20-Memory/23-MOC"
+    - "20-AI-Zone/20-Memory/24-Slices"
+    - "20-AI-Zone/20-Memory/97-Attic"
+    - "20-AI-Zone/25-Slip"
+    - "20-AI-Zone/30-Workbench"
+    - "20-AI-Zone/99-Assets/98-Archives"
+    - "30-Projects"
+    - "90-System/01-Templates"
+    - "90-System/92-Logs"
+    - "99-Assets/10-Attachments"
+    - "99-Assets/98-Archives"
+    - ".trash"
+  gitkeep_dirs:
+    - "00-DropZone/91-Temp"
+    - "05-Journal"
+    - "20-AI-Zone/20-Memory/21-Library/95-Others"
+    - "20-AI-Zone/20-Memory/22-Atomics"
+    - "20-AI-Zone/20-Memory/23-MOC"
+    - "20-AI-Zone/20-Memory/24-Slices"
+    - "20-AI-Zone/20-Memory/97-Attic"
+    - "20-AI-Zone/99-Assets/98-Archives"
+    - "30-Projects"
+    - "90-System/01-Templates"
+    - "90-System/92-Logs"
+    - "99-Assets/10-Attachments"
+    - "99-Assets/98-Archives"
+    - ".trash"
+  required_dirs:
+    - "00-DropZone"
+    - "05-Journal"
+    - "10-Index"
+    - "20-AI-Zone/10-Artifacts"
+    - "20-AI-Zone/20-Memory/21-Library"
+    - "20-AI-Zone/20-Memory/22-Atomics"
+    - "20-AI-Zone/20-Memory/23-MOC"
+    - "20-AI-Zone/20-Memory/24-Slices"
+    - "20-AI-Zone/20-Memory/97-Attic"
+    - "30-Projects"
+    - "90-System/01-Templates"
+    - "90-System/92-Logs"
+    - "99-Assets/10-Attachments"
+  skip_note_scan_tops:
+    - "10-Index"
+    - "90-System"
+    - "99-Assets"
+
+# 立项预建核心骨架（除 Vault 默认全套外，支持域内按需懒创建）
+init_skeleton:
+  dirs:
+    - "10-Artifacts"
+    - "20-Memory/21-Library"
+    - "20-Memory/22-Atomics"
+    - "20-Memory/23-MOC"
+    - "20-Memory/24-Slices"
+    - "20-Memory/97-Attic"
+    - "25-Slip"
+    - "30-Workbench"
+
+# 保留编号约定
+reserved_prefixes:
+  "25": "按需触发书签批注与轻量任务卡片舱（20 序列扩展）"
+  "90": "Vault 系统模板与运行日志目录（01-Templates / 92-Logs）"
+  "91": "草稿沙盒与废纸区 (全豁免)"
+  "95": "非标格式与未知介质兜底"
+  "97": "废弃历史卡片冷存避难所"
+  "98": "原件冷归档与打包"
+  "99": "全局资产中枢"
+
+# AI 轻量/免严苛 Schema 豁免区清单
+exempt_zones:
+  - "00-DropZone/91-Temp"
+  - "91-Temp"
+  - "97-Attic"
+  - "30-Workbench"
+
+# 正式知识资产舱 (参与 VFS 全库防撞与唯一性校验)
+formal_cabins:
+  - "10-Artifacts"
+  - "21-Library"
+  - "22-Atomics"
+  - "23-MOC"
+  - "25-Slip"
+
+# 全局保留字 (不得作为课题或 Vault ID)
+reserved_project_ids:
+  - "all"
+  - "journal"
+  - "ai-zone"
+  - "projects"

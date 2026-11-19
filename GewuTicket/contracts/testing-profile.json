@@ -1,0 +1,17 @@
+{
+  "app_id": "gewu-ticket",
+  "scenarios": {
+    "release": "strict release Contract Rail + smoke + security (standalone, zero GewuTrack)",
+    "security": "smoke + PreToolUse guard + validate_commit + zero-disk VaultStore probe",
+    "smoke": "bootstrap inspect + facade --template/--force + put zero-leak probe",
+    "staging": "drafting Contract Rail (staged-exemptions active) + smoke + security"
+  },
+  "schema": "forge.testing-profile/1",
+  "security_tier": "plaintext-py",
+  "staged_ignorable_warnings": [
+    "no_skills_yet",
+    "layer2_binary_not_compiled_yet",
+    "runtime_not_initialized"
+  ],
+  "track_capabilities": []
+}

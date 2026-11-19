@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gewu *)",
+      "Bash(python3 -I -B ./gewu *)"
+    ],
+    "deny": [
+      "Read(./GewuForge/app_core/**)",
+      "Read(./GewuForge/.local/**)",
+      "Read(./*/scripts/app_core/**)",
+      "Read(./*/.local/**)",
+      "Read(./.runtime/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -B <APP_DIR>/scripts/guard/pre_tool_use_guard.py"
+          }
+        ]
+      }
+    ]
+  }
+}

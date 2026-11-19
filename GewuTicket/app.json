@@ -1,0 +1,55 @@
+{
+  "app_id": "gewu-ticket",
+  "directory": "GewuTicket",
+  "lifecycle": "development-candidate",
+  "main_skill": "ticket-orchestrator",
+  "purpose": "由 1 个纯脚本技能包与多个无执行位数据卷装配的多 Agent 与人协同工单域，支持可扩展分类、阻塞与完工后双维审阅、7天冷归档及只读/影子读写挂载。",
+  "schema": "forge.app-source/1",
+  "title": "GewuTicket（格物工单）",
+  "track": {
+    "integrated": false
+  },
+  "version": "0.9.2",
+  "distribution": {
+    "schema": "gewu.domain-distribution/1",
+    "supported_platforms": [
+      "macos",
+      "linux",
+      "windows"
+    ],
+    "python_minimum": "3.9",
+    "requirements": [],
+    "cli_manifest": "contracts/cli-manifest.json",
+    "bootstrap_profile": "contracts/bootstrap-profile.json",
+    "data_volume": {
+      "root": "Volumes/GewuTicket-data",
+      "directories": [
+        "_meta",
+        "SYS/active",
+        "SYS/paused",
+        "SYS/closed",
+        "SYS/archive",
+        "DOC/active",
+        "DOC/paused",
+        "DOC/closed",
+        "DOC/archive",
+        "MSG/active",
+        "MSG/paused",
+        "MSG/closed",
+        "MSG/archive",
+        "TASK/active",
+        "TASK/paused",
+        "TASK/closed",
+        "TASK/archive",
+        "SLIP/active",
+        "SLIP/paused",
+        "SLIP/closed",
+        "SLIP/archive"
+      ],
+      "initialization": "ticket init-volume",
+      "uses_kek": false
+    },
+    "demo_kind": "ticket-tasks-v1",
+    "imports": []
+  }
+}
