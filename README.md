@@ -51,9 +51,16 @@
 
 克隆本仓库进入工作区根目录后，先运行对应平台的初始化脚本（自动装配 `.runtime/` 独立 Python 环境、同步 `.agents/skills/` 技能发现链接、生成统一启动器 `gewu.command` / `gewu.cmd`；详细参数见 [INSTALL.md](./INSTALL.md)）：
 
-```sh
-git clone https://github.com/gewuz/gewu-atlas.git gewu-workspace && cd gewu-workspace
-```
+- **GitHub**：
+  ```sh
+  git clone https://github.com/gewuz/gewu-atlas.git gewu-workspace
+  cd gewu-workspace
+  ```
+- **Gitee（国内镜像）**：
+  ```sh
+  git clone https://gitee.com/gewuz/gewu-atlas.git gewu-workspace
+  cd gewu-workspace
+  ```
 
 - **macOS**：
   ```sh
