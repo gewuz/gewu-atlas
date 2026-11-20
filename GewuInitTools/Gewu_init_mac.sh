@@ -10,10 +10,13 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
 DEFAULT_PY_VERSION="3.12.16"
 DEFAULT_PY_TAG="20261110"
-DEFAULT_PY_URL_ARM64="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}/cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-aarch64-apple-darwin-install_only.tar.gz"
+DEFAULT_PY_FILE_ARM64="cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-aarch64-apple-darwin-install_only.tar.gz"
 DEFAULT_PY_SHA_ARM64="e956e60bc9465d577ef8062059aa05cd3a2665b4b8678a2ed24e432368330b8f"
-DEFAULT_PY_URL_X64="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}/cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-x86_64-apple-darwin-install_only.tar.gz"
+DEFAULT_PY_FILE_X64="cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-x86_64-apple-darwin-install_only.tar.gz"
 DEFAULT_PY_SHA_X64="83f2922437e6d546d0fcdb8c11f150a8e52787e8d9ea8651b1974e20908eb1bc"
+DEFAULT_PY_MIRROR_1="https://registry.npmmirror.com/-/binary/python-build-standalone/${DEFAULT_PY_TAG}"
+DEFAULT_PY_MIRROR_2="https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/${DEFAULT_PY_TAG}"
+DEFAULT_PY_MIRROR_3="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}"
 
 WS_ARG=""
 EXPLICIT_PY=""
@@ -257,22 +260,42 @@ download_and_install_python() {
     [ "$OFFLINE" -eq 0 ] || fail_early "未找到本机 Python 3.9+，且处于 --offline 模式；请提供 --python-tar 或 --python"
     command -v curl >/dev/null 2>&1 || fail_early "缺少 curl，无法下载独立 Python"
     if [ -n "$PYTHON_URL" ]; then
-      dl_url="$PYTHON_URL"
+      dl_urls="$PYTHON_URL"
       expected_sha="$PYTHON_SHA256"
-    elif [ "$HOST_ARCH" = "arm64" ]; then
-      dl_url="$DEFAULT_PY_URL_ARM64"
-      expected_sha="$DEFAULT_PY_SHA_ARM64"
     else
-      dl_url="$DEFAULT_PY_URL_X64"
-      expected_sha="$DEFAULT_PY_SHA_X64"
+      if [ "$HOST_ARCH" = "arm64" ]; then
+        py_file="$DEFAULT_PY_FILE_ARM64"
+        expected_sha="$DEFAULT_PY_SHA_ARM64"
+      else
+        py_file="$DEFAULT_PY_FILE_X64"
+        expected_sha="$DEFAULT_PY_SHA_X64"
+      fi
+      dl_urls="${DEFAULT_PY_MIRROR_1}/${py_file} ${DEFAULT_PY_MIRROR_2}/${py_file} ${DEFAULT_PY_MIRROR_3}/${py_file}"
     fi
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gewu-py-dl.XXXXXX")
     src_archive="$tmp_dir/cpython-standalone.tar.gz"
     cleanup_archive=1
     notice "▶ 未检测到可用本机 Python 3.9+，正在下载 macOS (${HOST_ARCH}) 独立 CPython ${DEFAULT_PY_VERSION} 到工作区..." "warn"
-    if ! curl -fL --retry 3 --connect-timeout 20 -o "$src_archive" "$dl_url"; then
+    dl_ok=0
+    for cand_url in $dl_urls; do
+      rm -f "$src_archive"
+      notice "  • 尝试镜像：${cand_url}"
+      if curl -fL --retry 2 --connect-timeout 15 -o "$src_archive" "$cand_url"; then
+        if [ -n "$expected_sha" ]; then
+          actual_sha=$(shasum -a 256 "$src_archive" | awk '{print $1}')
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            notice "  ! 镜像文件 SHA-256 不匹配（actual=${actual_sha}），尝试下一个源..." "warn"
+            continue
+          fi
+        fi
+        dl_ok=1
+        break
+      fi
+      notice "  ! 当前镜像下载失败，自动切换下一个源..." "warn"
+    done
+    if [ "$dl_ok" -ne 1 ]; then
       rm -rf "$tmp_dir"
-      fail_early "下载独立 CPython 失败（可尝试 --python-url / --python-tar 或先安装 Homebrew python3）"
+      fail_early "下载独立 CPython 失败（已尝试国内镜像与官方源；可尝试 --python-url / --python-tar 或先安装 Homebrew python3）"
     fi
   fi
 
@@ -367,7 +390,9 @@ SKIP_SKILLS = skip_skills_s == "1"
 SKIP_GIT_CHECK = skip_git_s == "1"
 SKIP_GIT_INIT = skip_git_init_s == "1"
 JSON_OUT = json_out_s == "1"
-PIP_INDEX_URL = os.environ.get("GEWU_PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple")
+PIP_INDEX_EXPLICIT = bool(os.environ.get("GEWU_PIP_INDEX_URL"))
+PIP_INDEX_URL = os.environ.get("GEWU_PIP_INDEX_URL", "https://mirrors.aliyun.com/pypi/simple/")
+PIP_FALLBACK_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 SKIP_SCAN_DIRS = frozenset(
     {"GewuTrack", "GewuInitTools", "Volumes", "demo", "build", "dist", "logs", "backups", "instances", "outputs"}
@@ -674,14 +699,31 @@ def install_domain_deps(py, root, packages):
     cmd = [str(py), "-I", "-X", "utf8", "-B", "-m", "pip", "install", "--disable-pip-version-check"]
     if OFFLINE:
         cmd += ["--no-index"]
-    else:
-        cmd += ["--index-url", PIP_INDEX_URL]
-    if WHEELS_DIR:
-        cmd += ["--find-links", str(WHEELS_DIR)]
-    cmd += ["-r", str(req_stage)]
-    notice("▶ 正在安装各域依赖库（离线模式）..." if OFFLINE else f"▶ 正在安装各域依赖库（源：{PIP_INDEX_URL}）...")
-    proc = subprocess.run(cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
-    need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        if WHEELS_DIR:
+            cmd += ["--find-links", str(WHEELS_DIR)]
+        cmd += ["-r", str(req_stage)]
+        notice("▶ 正在安装各域依赖库（离线模式）...")
+        proc = subprocess.run(cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
+        need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        return "installed"
+
+    mirrors = [PIP_INDEX_URL]
+    if not PIP_INDEX_EXPLICIT and PIP_FALLBACK_INDEX_URL not in mirrors:
+        mirrors.append(PIP_FALLBACK_INDEX_URL)
+    last_err = ""
+    for idx_url in mirrors:
+        run_cmd = list(cmd) + ["--index-url", idx_url]
+        if WHEELS_DIR:
+            run_cmd += ["--find-links", str(WHEELS_DIR)]
+        run_cmd += ["-r", str(req_stage)]
+        notice(f"▶ 正在安装各域依赖库（源：{idx_url}）...")
+        proc = subprocess.run(run_cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
+        if proc.returncode == 0:
+            return "installed"
+        last_err = (proc.stderr or proc.stdout)[-2000:]
+        if idx_url != mirrors[-1]:
+            notice(f"  ! 依赖源 {idx_url} 安装失败，自动切换备源重试...", "warn")
+    need(False, "pip install 失败：" + last_err)
     return "installed"
 
 
@@ -836,7 +878,12 @@ def check_git(root):
             git_ver = proc.stdout.strip()
             break
     if git_bin is None:
-        msg = "未检测到可用的 Git（GewuTrack / 域变更引擎依赖 git）；请执行 xcode-select --install 或 brew install git 后重试"
+        msg = (
+            "未检测到可用的 Git（域变更引擎依赖 git）；请执行 xcode-select --install，"
+            "或使用国内镜像通过 Homebrew 安装："
+            "HOMEBREW_API_DOMAIN=https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api "
+            "HOMEBREW_BOTTLE_DOMAIN=https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles brew install git"
+        )
         if SKIP_GIT_CHECK:
             notice(f"  ! {msg}（已通过 --skip-git-check 忽略）", "warn")
             return {

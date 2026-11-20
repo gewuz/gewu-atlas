@@ -388,6 +388,8 @@ KNOWN_SLOTS: Dict[str, str] = {
     "fields": "str",
     "adaptive": "bool",
     "min_chars": "int",
+    "depth": "int",
+    "parent_url": "str",
     "target_chars": "int",
     "max_chars": "int",
     "prefix": "str",
@@ -742,7 +744,7 @@ def _parse_channels(raw_argv: List[str], stdin_text: Optional[str]) -> Dict[str,
     ):
         if bkey in merged:
             merged[bkey] = _coerce_bool(merged[bkey], bkey)
-    for ikey in ("top_k", "level", "offset", "min_chars", "target_chars", "max_chars", "days", "dpi", "threshold", "decorative_size", "decorative_dim", "end_offset", "start_line", "end_line", "head", "tail", "hops", "min_score", "snippet_width", "summary_width"):
+    for ikey in ("top_k", "level", "offset", "min_chars", "depth", "target_chars", "max_chars", "days", "dpi", "threshold", "decorative_size", "decorative_dim", "end_offset", "start_line", "end_line", "head", "tail", "hops", "min_score", "snippet_width", "summary_width"):
         if ikey in merged and merged[ikey] is not None:
             try:
                 merged[ikey] = int(merged[ikey])
@@ -2722,10 +2724,18 @@ def _attach_auto_slices(
         rows = res.get(key)
         if isinstance(rows, list):
             for item in rows:
-                if isinstance(item, dict) and item.get("note_ref") and item.get("status") != "blocked":
+                if (
+                    isinstance(item, dict)
+                    and item.get("note_ref")
+                    and item.get("status") != "blocked"
+                    and not item.get("index_candidate")
+                ):
                     cand_refs.append(str(item["note_ref"]))
     if res.get("note_ref"):
-        cand_refs.append(str(res["note_ref"]))
+        # Skip single index_candidate so borderline directory notes are not locked by TOC/slice backlinks.
+        results_list = res.get("results") or []
+        if not (isinstance(results_list, list) and len(results_list) == 1 and isinstance(results_list[0], dict) and results_list[0].get("index_candidate")):
+            cand_refs.append(str(res["note_ref"]))
     cand_refs = list(dict.fromkeys(cand_refs))
     if not cand_refs:
         res["auto_slices"] = []
@@ -2988,6 +2998,60 @@ def _dispatch_vault_action(
         cap = _triad("已完成格式精加工辅助动作", ["按 atlas-fmt 技能继续核对下一窗口或图片", "向用户汇报实际完成范围"], "脚本不执行语义判断；此回执不代表 deep 加工完成。", terminal=True)
         return 0, _envelope(True, "OK_FMT_REFINEMENT", cap, data=res), sealed_paths
 
+    def _build_url_ingest_capsule(vref: str, res: Dict[str, Any]) -> Dict[str, Any]:
+        blk = int(res.get("blocked_count") or 0)
+        conv = int(res.get("converted_count") or 0)
+        thin_cnt = int(res.get("thin_with_links_count") or 0)
+        disc_cnt = int(res.get("discarded_count") or 0)
+        idx_refs = [str(x) for x in (res.get("index_candidate_refs") or []) if str(x)]
+        depth_val = int(res.get("depth") or 1)
+        max_d = int(res.get("max_depth") or 3)
+        depth_capped = bool(res.get("depth_limit_reached", depth_val >= max_d))
+        log_ref = str(res.get("ingest_log_ref") or "")
+
+        need_inspect = bool(thin_cnt > 0 or idx_refs)
+        if need_inspect and not depth_capped:
+            gate_tag = f"[INGEST_GATE: INSPECT_LINKS (depth={depth_val}/{max_d})]"
+        elif need_inspect and depth_capped:
+            gate_tag = f"[INGEST_GATE: DEPTH_CAP_REACHED ({depth_val}/{max_d})]"
+        else:
+            gate_tag = "[INGEST_GATE: SUBSTANCE_READY]"
+
+        orbit_url: List[str] = []
+        if need_inspect and not depth_capped:
+            next_d = depth_val + 1
+            orbit_url.append(
+                f"检查内容与 extracted_links 筛选目标 URL 后发起第 {next_d} 层爬取: "
+                f"./gewu atlas --action url-ingest --ref {vref} --urls '<筛选后URL>' --depth {next_d}"
+            )
+        if idx_refs:
+            orbit_url.append(
+                f"确认目录/无实质内容页后立即删除 ({','.join(idx_refs)}): "
+                f"./gewu atlas --action trash --ref {vref} --mode delete --note_ref {idx_refs[0]}"
+            )
+        elif need_inspect and depth_capped:
+            orbit_url.append("已达 3 层深爬上限，停止展开外链并向人类汇报需指定的精确入口 URL")
+        if log_ref:
+            orbit_url.append(f"回看采集日志尾部: ./gewu atlas --action note-get --ref {vref} --note_ref {log_ref} --tail 40")
+        orbit_url.append(f"查看知识库笔记: ./gewu atlas --action note-list --ref {vref}")
+
+        anchor_parts = [
+            f"已执行 SSRF 校验、转译与双口径 <=300 字顺风车质检（已自动删除 {disc_cnt} 个 <=300 字且无有效外链的空壳网页）。"
+        ]
+        if need_inspect:
+            anchor_parts.append(
+                "检测到纯目录或高链接密度页：禁止直接当正文萃取；检查内容筛选链接进入下层 url-ingest（上限 3 层），无独立价值目录页须删除。"
+            )
+        if log_ref:
+            anchor_parts.append(f"采集台账已记入 {log_ref}（用 note-get --tail 40 查看，严禁在 tmp 自建日志）。")
+
+        return _triad(
+            f"已完成 Vault {vref} URL 采集（L{depth_val}/{max_d} · 成功 {conv}、目录待追查 {thin_cnt + len(idx_refs)}、自动删除 {disc_cnt}、拦截 {blk}） {gate_tag}",
+            orbit_url,
+            " ".join(anchor_parts),
+            terminal=True,
+        )
+
     if action == "fmt":
         res = engine_run_fmt(
             vault_dir=vdir,
@@ -3011,6 +3075,9 @@ def _dispatch_vault_action(
             ticket_id=ticket_id_arg,
             target_zone=str(args.get("target_zone") or "").strip() or None,
             subdir=str(args.get("subdir") or "").strip() or None,
+            min_chars=args.get("min_chars"),
+            depth=args.get("depth"),
+            parent_url=str(args.get("parent_url") or "").strip() or None,
         )
         if bool(args.get("auto_slice", False)) and not bool(args.get("dry_run", False)) and not bool(args.get("deep", False)) and not bool(args.get("check", False)):
             _attach_auto_slices(
@@ -3020,12 +3087,15 @@ def _dispatch_vault_action(
             )
         cnt = int(res.get("converted_count", 0))
         blk = int(res.get("blocked_count", 0))
-        cap = _triad(
-            f"已完成 Vault {vref} 多模态 fmt 转译（模式 {res.get('mode')}，成功 {cnt} 项，拦截 {blk} 项）",
-            [f"查看知识库笔记: ./gewu atlas --action note-list --ref {vref}", "继续执行 note-slice / atomic-extract 或向人类汇报"],
-            "已启用完整第三方多模态转译引擎，原件冷归档至 99-Assets/98-Archives/{YYMM}/，附件统一存放 99-Assets/10-Attachments/。",
-            terminal=True,
-        )
+        if res.get("mode") in ("url", "url-batch", "url-list"):
+            cap = _build_url_ingest_capsule(vref, res)
+        else:
+            cap = _triad(
+                f"已完成 Vault {vref} 多模态 fmt 转译（模式 {res.get('mode')}，成功 {cnt} 项，拦截 {blk} 项）",
+                [f"查看知识库笔记: ./gewu atlas --action note-list --ref {vref}", "继续执行 note-slice / atomic-extract 或向人类汇报"],
+                "已启用完整第三方多模态转译引擎，原件冷归档至 99-Assets/98-Archives/{YYMM}/，附件统一存放 99-Assets/10-Attachments/。",
+                terminal=True,
+            )
         return (1 if blk else 0), _envelope(not blk, "E_FMT_PARTIAL" if blk else "OK_FMT", cap, data=res), sealed_paths
 
     if action == "url-ingest":
@@ -3048,6 +3118,8 @@ def _dispatch_vault_action(
             target_zone=str(args.get("target_zone") or "").strip() or None,
             subdir=str(args.get("subdir") or "").strip() or None,
             min_chars=args.get("min_chars"),
+            depth=args.get("depth"),
+            parent_url=str(args.get("parent_url") or "").strip() or None,
         )
         if bool(args.get("auto_slice", False)) and not bool(args.get("dry_run", False)) and not bool(args.get("deep", False)):
             _attach_auto_slices(
@@ -3059,23 +3131,8 @@ def _dispatch_vault_action(
         conv = int(res.get("converted_count") or 0)
         thin_cnt = int(res.get("thin_with_links_count") or 0)
         disc_cnt = int(res.get("discarded_count") or 0)
-        log_ref = str(res.get("ingest_log_ref") or "")
         all_failed = bool(res.get("mode") == "url-batch" and conv == 0 and thin_cnt == 0 and disc_cnt == 0 and blk > 0 and not bool(args.get("dry_run", False)))
-        orbit_url = []
-        if thin_cnt > 0:
-            orbit_url.append(f"检查 thin_with_links 中的外链，决定是否继续 url-ingest 追查（共 {thin_cnt} 条短页含外链）")
-        if log_ref:
-            orbit_url.append(f"回看采集日志尾部: ./gewu atlas --action note-get --ref {vref} --note_ref {log_ref} --tail 40")
-        orbit_url.append(f"查看知识库笔记: ./gewu atlas --action note-list --ref {vref}")
-        anchor_parts = ["已执行 SSRF 校验、转译与 <300 字质量闸门（含外链提示追查、无外链直接抛弃）。"]
-        if log_ref:
-            anchor_parts.append(f"采集台账已自动记入工作台日志 {log_ref}（用 note-get --tail 40 查看，严禁在 tmp 自建日志）。")
-        cap = _triad(
-            f"已完成 Vault {vref} URL 采集（成功 {conv}、短页待追查 {thin_cnt}、抛弃 {disc_cnt}、拦截 {blk}）",
-            orbit_url,
-            " ".join(anchor_parts),
-            terminal=True,
-        )
+        cap = _build_url_ingest_capsule(vref, res)
         return (1 if all_failed else 0), _envelope(not all_failed, "E_URL_INGEST_FAILED" if all_failed else "OK_URL_INGEST", cap, data=res), sealed_paths
 
     if action.startswith("slip-"):

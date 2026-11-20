@@ -200,6 +200,16 @@
     },
     {
       "files": [
+        "contracts/url-ingest-crawl-v1.md"
+      ],
+      "id": "atlas-url-ingest-crawl-contract",
+      "kind": "contract",
+      "references": [
+        "rule-arch-workflows-ipc"
+      ]
+    },
+    {
+      "files": [
         "scripts/app_core/__init__.py",
         "scripts/app_core/app_worker.py",
         "scripts/app_core/capsule.py",

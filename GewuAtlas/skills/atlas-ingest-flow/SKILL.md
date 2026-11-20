@@ -16,7 +16,7 @@ description: Atlas 知识入库、多模态转换、自适应切片、原子萃�
      ./gewu atlas --action ingest --ref <vlt_01> [--project_ref <prj_01>] --file_name <文件名> --auto_slice true
      ```
    - 单条 URL 报 `E_URL_NETWORK` / `E_URL_POLICY`（403/404/超时）时自动跳过失败项并保留成功结果，勿重试失败 URL；`--deep true` 长篇精修配合 `fmt-window` / `fmt-apply-window` / `fmt-assets` 与 `note-slice`。
-   - **短页质量闸门与内置采集台账**：下载正文净字数默认 `< 300` 字（可用 `--min_chars 0` 关闭）时不落盘污染 `21-Library/`——若含外链则返回 `thin_with_links` 及 `extracted_links` 由 Agent 决定是否追查，无外链则直接抛弃（`discarded_too_short`）。每次采集结果自动追加写入当前域工作台临时区的 `url-ingest-log.md` 并返回句柄 `ingest_log_ref`，跨轮回看进度请用 `note-get --ref <vlt_01> --note_ref <ingest_log_ref> --tail 40`（或 `--head 30`），**严禁在 `tmp` 或根目录自建日志文件**。
+   - **双口径短页/目录闸门、2~3 层深爬与采集台账（`[INGEST_GATE]`）**：下载正文默认核验总净字数与去链接纯正文净字数（`prose_chars < 300`，可用 `--min_chars 0` 关闭）——① **不超过 300 字且无有效外链的空壳页**由顺风车直接物理删除（`discarded_too_short`，不入库）；② **短页或纯目录页含外链**（`thin_with_links` / `index_candidate`，不切片防锁死）由 `[INGEST_GATE]` 胶囊提醒 Agent 检查内容，筛选目标子链接生成新 URL 列表，按 `--depth 2` / `--depth 3`（硬上限 `3` 层）再次调 `url-ingest`；③ 确认无独立正文价值的目录页须调 `trash --mode delete` 清理。每次采集自动记入工作台 `url-ingest-log.md` 并返回 `ingest_log_ref`，跨轮回看用 `note-get --ref <vlt_01> --note_ref <ingest_log_ref> --tail 40`，**严禁在 `tmp` 或根目录自建日志文件**。
 3. **原子萃取 `atomic-extract`（蒸馏独立命题，禁照抄切片）**：
    - 先用 `note-get --note_refs <slc_01,slc_02>` 实读切片，再提炼命题调用：
      ```bash

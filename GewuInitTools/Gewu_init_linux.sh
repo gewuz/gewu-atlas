@@ -10,10 +10,13 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
 DEFAULT_PY_VERSION="3.12.16"
 DEFAULT_PY_TAG="20261110"
-DEFAULT_PY_URL_ARM64="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}/cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-aarch64-unknown-linux-gnu-install_only.tar.gz"
+DEFAULT_PY_FILE_ARM64="cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-aarch64-unknown-linux-gnu-install_only.tar.gz"
 DEFAULT_PY_SHA_ARM64="4792f81750282597fb2a3389fe18b945ed2ba6aad5e45ad406d122c58cb33081"
-DEFAULT_PY_URL_X64="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}/cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
+DEFAULT_PY_FILE_X64="cpython-${DEFAULT_PY_VERSION}%2B${DEFAULT_PY_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
 DEFAULT_PY_SHA_X64="c2f87d4b4e8db3abddb0f116c6ccfc503d0cbdbb9ee8faacddad1b679ec12e99"
+DEFAULT_PY_MIRROR_1="https://registry.npmmirror.com/-/binary/python-build-standalone/${DEFAULT_PY_TAG}"
+DEFAULT_PY_MIRROR_2="https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/${DEFAULT_PY_TAG}"
+DEFAULT_PY_MIRROR_3="https://github.com/astral-sh/python-build-standalone/releases/download/${DEFAULT_PY_TAG}"
 
 WS_ARG=""
 EXPLICIT_PY=""
@@ -266,22 +269,45 @@ download_and_install_python() {
   else
     [ "$OFFLINE" -eq 0 ] || fail_early "未找到可用本机 Python 3.9+（或缺失 python3-venv），且处于 --offline 模式；请提供 --python-tar 或 --python"
     if [ -n "$PYTHON_URL" ]; then
-      dl_url="$PYTHON_URL"
+      dl_urls="$PYTHON_URL"
       expected_sha="$PYTHON_SHA256"
-    elif [ "$HOST_ARCH" = "aarch64" ]; then
-      dl_url="$DEFAULT_PY_URL_ARM64"
-      expected_sha="$DEFAULT_PY_SHA_ARM64"
     else
-      dl_url="$DEFAULT_PY_URL_X64"
-      expected_sha="$DEFAULT_PY_SHA_X64"
+      if [ "$HOST_ARCH" = "aarch64" ]; then
+        py_file="$DEFAULT_PY_FILE_ARM64"
+        expected_sha="$DEFAULT_PY_SHA_ARM64"
+      else
+        py_file="$DEFAULT_PY_FILE_X64"
+        expected_sha="$DEFAULT_PY_SHA_X64"
+      fi
+      dl_urls="${DEFAULT_PY_MIRROR_1}/${py_file} ${DEFAULT_PY_MIRROR_2}/${py_file} ${DEFAULT_PY_MIRROR_3}/${py_file}"
     fi
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gewu-py-dl.XXXXXX")
     src_archive="$tmp_dir/cpython-standalone.tar.gz"
     cleanup_archive=1
     notice "▶ 未检测到可用本机 Python 3.9+（含 venv），正在下载 Linux (${HOST_ARCH}) 独立 CPython ${DEFAULT_PY_VERSION} 到工作区..." "warn"
-    if ! download_file "$dl_url" "$src_archive"; then
+    dl_ok=0
+    for cand_url in $dl_urls; do
+      rm -f "$src_archive"
+      notice "  • 尝试镜像：${cand_url}"
+      if download_file "$cand_url" "$src_archive"; then
+        if [ -n "$expected_sha" ]; then
+          actual_sha=$(calc_sha256 "$src_archive") || {
+            rm -rf "$tmp_dir"
+            fail_early "缺少 sha256sum / shasum，无法校验独立 CPython 归档"
+          }
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            notice "  ! 镜像文件 SHA-256 不匹配（actual=${actual_sha}），尝试下一个源..." "warn"
+            continue
+          fi
+        fi
+        dl_ok=1
+        break
+      fi
+      notice "  ! 当前镜像下载失败，自动切换下一个源..." "warn"
+    done
+    if [ "$dl_ok" -ne 1 ]; then
       rm -rf "$tmp_dir"
-      fail_early "下载独立 CPython 失败（缺少 curl/wget 或网络受限；可尝试 --python-url / --python-tar，或安装系统 python3 + python3-venv）"
+      fail_early "下载独立 CPython 失败（已尝试国内镜像与官方源；可尝试 --python-url / --python-tar，或安装系统 python3 + python3-venv）"
     fi
   fi
 
@@ -374,7 +400,9 @@ SKIP_SKILLS = skip_skills_s == "1"
 SKIP_GIT_CHECK = skip_git_s == "1"
 SKIP_GIT_INIT = skip_git_init_s == "1"
 JSON_OUT = json_out_s == "1"
-PIP_INDEX_URL = os.environ.get("GEWU_PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple")
+PIP_INDEX_EXPLICIT = bool(os.environ.get("GEWU_PIP_INDEX_URL"))
+PIP_INDEX_URL = os.environ.get("GEWU_PIP_INDEX_URL", "https://mirrors.aliyun.com/pypi/simple/")
+PIP_FALLBACK_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 SKIP_SCAN_DIRS = frozenset(
     {"GewuTrack", "GewuInitTools", "Volumes", "demo", "build", "dist", "logs", "backups", "instances", "outputs"}
@@ -677,14 +705,31 @@ def install_domain_deps(py, root, packages):
     cmd = [str(py), "-I", "-X", "utf8", "-B", "-m", "pip", "install", "--disable-pip-version-check"]
     if OFFLINE:
         cmd += ["--no-index"]
-    else:
-        cmd += ["--index-url", PIP_INDEX_URL]
-    if WHEELS_DIR:
-        cmd += ["--find-links", str(WHEELS_DIR)]
-    cmd += ["-r", str(req_stage)]
-    notice("▶ 正在安装各域依赖库（离线模式）..." if OFFLINE else f"▶ 正在安装各域依赖库（源：{PIP_INDEX_URL}）...")
-    proc = subprocess.run(cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
-    need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        if WHEELS_DIR:
+            cmd += ["--find-links", str(WHEELS_DIR)]
+        cmd += ["-r", str(req_stage)]
+        notice("▶ 正在安装各域依赖库（离线模式）...")
+        proc = subprocess.run(cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
+        need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        return "installed"
+
+    mirrors = [PIP_INDEX_URL]
+    if not PIP_INDEX_EXPLICIT and PIP_FALLBACK_INDEX_URL not in mirrors:
+        mirrors.append(PIP_FALLBACK_INDEX_URL)
+    last_err = ""
+    for idx_url in mirrors:
+        run_cmd = list(cmd) + ["--index-url", idx_url]
+        if WHEELS_DIR:
+            run_cmd += ["--find-links", str(WHEELS_DIR)]
+        run_cmd += ["-r", str(req_stage)]
+        notice(f"▶ 正在安装各域依赖库（源：{idx_url}）...")
+        proc = subprocess.run(run_cmd, env=pip_env(), capture_output=True, text=True, timeout=900)
+        if proc.returncode == 0:
+            return "installed"
+        last_err = (proc.stderr or proc.stdout)[-2000:]
+        if idx_url != mirrors[-1]:
+            notice(f"  ! 依赖源 {idx_url} 安装失败，自动切换备源重试...", "warn")
+    need(False, "pip install 失败：" + last_err)
     return "installed"
 
 
@@ -827,7 +872,10 @@ def check_git(root):
         else:
             git_bin = None
     if not git_bin:
-        msg = "未检测到 Git（GewuTrack / 域变更引擎依赖 git）；Ubuntu/Debian 请执行 sudo apt-get install -y git，RHEL/Fedora 请执行 sudo dnf install -y git"
+        msg = (
+            "未检测到 Git（域变更引擎依赖 git）；Ubuntu/Debian 请执行 sudo apt-get install -y git，"
+            "RHEL/Fedora 请执行 sudo dnf install -y git（可先将系统软件源切至 mirrors.aliyun.com 或 mirrors.tuna.tsinghua.edu.cn 加速）"
+        )
         if SKIP_GIT_CHECK:
             notice(f"  ! {msg}（已通过 --skip-git-check 忽略）", "warn")
             return {

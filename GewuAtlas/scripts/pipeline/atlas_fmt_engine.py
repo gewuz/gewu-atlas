@@ -794,8 +794,23 @@ def _convert_single_local_file(
 
 
 _MD_LINK_URL_RE = re.compile(r"(?<!!)\[[^\]]*\]\((https?://[^\s\)]+)\)")
+_MD_LINK_FULL_RE = re.compile(r"(?<!!)\[[^\]]*\]\(https?://[^\s\)]+\)")
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^\)]*\)")
 _BARE_URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
+_CONVERTER_CALLOUT_RE = re.compile(r"(?m)^>\s*\[!NOTE\]\s*离线网页转译提示.*\n(?:>\s*.*\n)*")
 _WAYBACK_RE = re.compile(r"^https?://web\.archive\.org/web/(\d{14})/(https?://.+)$", re.IGNORECASE)
+MAX_URL_CRAWL_DEPTH = 3
+
+
+def _validate_crawl_depth(depth: Optional[int]) -> int:
+    d = 1 if depth is None else int(depth)
+    if d < 1 or d > MAX_URL_CRAWL_DEPTH:
+        raise VaultStoreError(
+            "E_PARAM_INVALID",
+            f"多层网页爬取深度 --depth 必须在 1..{MAX_URL_CRAWL_DEPTH} 之间（契约上限 {MAX_URL_CRAWL_DEPTH} 层）",
+            exit_code=1,
+        )
+    return d
 
 
 def _normalize_fetch_url(url: str) -> str:
@@ -847,56 +862,116 @@ def _find_existing_url_note(
     return None
 
 
-def _inspect_thin_url_output(md_path: Path, source_url: str, *, min_chars: int = 300) -> Optional[Dict[str, Any]]:
-    """Quality gate for downloaded URL content (<min_chars net body):
-    - Has outbound HTTP(S) links -> remove stub & return thin_with_links for Agent follow-up decision.
-    - No outbound links -> remove stub & return discarded_too_short.
-    """
-    if min_chars <= 0 or not md_path.is_file():
-        return None
-    try:
-        raw = md_path.read_text(encoding="utf-8", errors="replace")
-        _, body, _ = extract_frontmatter(raw)
-    except Exception:
-        return None
-    clean_body = re.sub(r"[\s#*`>|\-_]+", "", body)
-    char_count = len(clean_body)
-    if char_count >= min_chars:
-        return None
+def _extract_url_body_metrics(body: str, source_url: str, *, max_links: int = 30) -> Tuple[int, int, List[str]]:
+    """Compute net char_count, link-stripped prose_chars, and deduplicated outbound HTTP(S) links."""
+    stripped_body = _CONVERTER_CALLOUT_RE.sub("", body or "")
+    raw_chars = len(re.sub(r"[\s#*`>|\-_]+", "", stripped_body))
+    prose_only = _MD_IMG_RE.sub("", stripped_body)
+    prose_only = _MD_LINK_FULL_RE.sub("", prose_only)
+    prose_only = _BARE_URL_RE.sub("", prose_only)
+    prose_chars = len(re.sub(r"[\s#*`>|\-_]+", "", prose_only))
 
     src_norm = (source_url or "").strip().rstrip("/").lower()
     links: List[str] = []
     seen: set[str] = set()
-    for cand in (*_MD_LINK_URL_RE.findall(body), *_BARE_URL_RE.findall(body)):
+    for cand in (*_MD_LINK_URL_RE.findall(stripped_body), *_BARE_URL_RE.findall(stripped_body)):
         u = cand.rstrip(".,;:!?)\"]")
         u_norm = u.rstrip("/").lower()
         if not u or u_norm == src_norm or u_norm in seen:
             continue
         seen.add(u_norm)
         links.append(u)
-        if len(links) >= 10:
+        if len(links) >= max_links:
             break
+    return raw_chars, prose_chars, links
 
+
+def _evaluate_url_output(
+    md_path: Path,
+    source_url: str,
+    *,
+    min_chars: int = 300,
+    depth: int = 1,
+    parent_url: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Evaluate downloaded URL markdown under dual-threshold gate (char_count & link-stripped prose_chars).
+
+    Returns (override_result_if_deleted, metrics_dict).
+    """
+    if not md_path.is_file():
+        return None, {}
+    try:
+        raw = md_path.read_text(encoding="utf-8", errors="replace")
+        _, body, _ = extract_frontmatter(raw)
+    except Exception:
+        return None, {}
+
+    raw_chars, prose_chars, links = _extract_url_body_metrics(body, source_url, max_links=30)
+    is_index_cand = bool(len(links) >= 5 and prose_chars < max(600, len(links) * 35))
+    metrics: Dict[str, Any] = {
+        "char_count": raw_chars,
+        "prose_chars": prose_chars,
+        "link_count": len(links),
+        "depth": depth,
+    }
+    if parent_url:
+        metrics["parent_url"] = parent_url
+    if is_index_cand:
+        metrics["index_candidate"] = True
+        metrics["extracted_links"] = links
+
+    if min_chars <= 0:
+        return None, metrics
+    if raw_chars >= min_chars and prose_chars >= min_chars:
+        return None, metrics
+
+    # Empty stub or pure directory page (prose_chars < min_chars): unlink so zero junk enters 21-Library/.
     try:
         md_path.unlink(missing_ok=True)
     except OSError:
         pass
 
+    base_meta: Dict[str, Any] = {
+        "source_name": source_url,
+        "char_count": raw_chars,
+        "prose_chars": prose_chars,
+        "min_chars": min_chars,
+        "depth": depth,
+        "auto_deleted": True,
+    }
+    if parent_url:
+        base_meta["parent_url"] = parent_url
+
     if links:
         return {
+            **base_meta,
             "status": "thin_with_links",
-            "source_name": source_url,
-            "char_count": char_count,
-            "min_chars": min_chars,
-            "preview": body.strip()[:300],
+            "is_directory_only": raw_chars >= min_chars,
+            "preview": body.strip()[:1200],
             "extracted_links": links,
-        }
+            "next_depth": depth + 1 if depth < MAX_URL_CRAWL_DEPTH else None,
+            "depth_limit_reached": depth >= MAX_URL_CRAWL_DEPTH,
+        }, metrics
     return {
+        **base_meta,
         "status": "discarded_too_short",
-        "source_name": source_url,
-        "char_count": char_count,
-        "min_chars": min_chars,
-    }
+    }, metrics
+
+
+def _inspect_thin_url_output(
+    md_path: Path,
+    source_url: str,
+    *,
+    min_chars: int = 300,
+    depth: int = 1,
+    parent_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Quality gate for downloaded URL content (<min_chars net body or link-stripped prose):
+    - Has outbound HTTP(S) links -> remove stub & return thin_with_links for Agent follow-up decision.
+    - No outbound links -> remove stub & return discarded_too_short.
+    """
+    override, _ = _evaluate_url_output(md_path, source_url, min_chars=min_chars, depth=depth, parent_url=parent_url)
+    return override
 
 
 def _append_url_ingest_log(
@@ -952,22 +1027,26 @@ def _append_url_ingest_log(
         return str(s or "").replace("|", "/").replace("\n", " ").strip()
 
     for it in converted_items:
-        st_lbl = "already_ingested" if it.get("already_ingested") else "ok"
-        rows.append(f"| {_esc(it.get('source_name'))} | {st_lbl} | `{_esc(it.get('note_ref') or it.get('note_name'))}` | {it.get('char_count', '-')} | - |")
+        st_lbl = "already_ingested" if it.get("already_ingested") else ("index_candidate" if it.get("index_candidate") else "ok")
+        cnt_lbl = f"{it.get('prose_chars', '-')}/{it.get('char_count', '-')}" if "prose_chars" in it else str(it.get("char_count", "-"))
+        lks = ", ".join(it.get("extracted_links") or [])[:180] if it.get("index_candidate") else "-"
+        rows.append(f"| L{it.get('depth', 1)} | {_esc(it.get('source_name'))} | {st_lbl} | `{_esc(it.get('note_ref') or it.get('note_name'))}` | {cnt_lbl} | {_esc(lks)} |")
     for it in thin_items:
         lks = ", ".join(it.get("extracted_links") or [])[:180]
-        rows.append(f"| {_esc(it.get('source_name'))} | thin_with_links | 未落盘（待追查外链） | {it.get('char_count', 0)} | {_esc(lks)} |")
+        cnt_lbl = f"{it.get('prose_chars', 0)}/{it.get('char_count', 0)}"
+        rows.append(f"| L{it.get('depth', 1)} | {_esc(it.get('source_name'))} | thin_with_links | 未落盘（待追查外链） | {cnt_lbl} | {_esc(lks)} |")
     for it in discarded_items:
-        rows.append(f"| {_esc(it.get('source_name'))} | discarded_too_short | <{it.get('min_chars', 300)}字且无外链已抛弃 | {it.get('char_count', 0)} | - |")
+        cnt_lbl = f"{it.get('prose_chars', 0)}/{it.get('char_count', 0)}"
+        rows.append(f"| L{it.get('depth', 1)} | {_esc(it.get('source_name'))} | discarded_too_short | <={it.get('min_chars', 300)}字且无外链已顺风车删除 | {cnt_lbl} | - |")
     for it in blocked_items:
-        rows.append(f"| {_esc(it.get('source_name'))} | blocked | {_esc(it.get('code'))}: {_esc(it.get('reason'))[:120]} | - | - |")
+        rows.append(f"| L{it.get('depth', 1)} | {_esc(it.get('source_name'))} | blocked | {_esc(it.get('code'))}: {_esc(it.get('reason'))[:120]} | - | - |")
 
     entry = "\n".join(
         [
-            f"## [{ts}] · Agent: `{actor}` · 成功={len(converted_items)} | 短页待追查={len(thin_items)} | 抛弃={len(discarded_items)} | 失败={len(blocked_items)}",
+            f"## [{ts}] · Agent: `{actor}` · 成功={len(converted_items)} | 短页/目录待追查={len(thin_items)} | 自动删除={len(discarded_items)} | 失败={len(blocked_items)}",
             "",
-            "| URL | 状态 | 句柄 / 原因 | 净字数 | 待追查外链 |",
-            "| :--- | :--- | :--- | :---: | :--- |",
+            "| 层级 | URL | 状态 | 句柄 / 原因 | 纯正文/总字数 | 待追查外链 |",
+            "| :---: | :--- | :--- | :--- | :---: | :--- |",
             *rows,
             "",
         ]
@@ -997,6 +1076,8 @@ def _convert_single_url(
     subdir: Optional[str] = None,
     defer_sync: bool = False,
     min_chars: int = 300,
+    depth: int = 1,
+    parent_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     lib_dir, target_doc_type, zone_key = _resolve_fmt_target_dir(vault_dir, domain, target_zone, subdir)
     att_dir = vault_dir / "99-Assets" / "10-Attachments"
@@ -1026,6 +1107,7 @@ def _convert_single_url(
             "domain_scope": domain["scope"],
             "project_ref": domain["project_ref"],
             "project_id": domain["project_id"],
+            "depth": depth,
             "dry_run": True,
             "network_validated": False,
         }
@@ -1037,6 +1119,7 @@ def _convert_single_url(
         existing_dup["domain_scope"] = domain["scope"]
         existing_dup["project_ref"] = domain["project_ref"]
         existing_dup["project_id"] = domain["project_id"]
+        existing_dup["depth"] = depth
         return existing_dup
 
     # One download/type-dispatch path for direct URLs and URL lists. A PDF URL is
@@ -1051,17 +1134,15 @@ def _convert_single_url(
             target_zone=target_zone, subdir=subdir,
         )
     item["source_name"] = url
-    out_md_raw = item.get("_out_path") or item.get("out_path")
-    if out_md_raw:
-        out_md_p = Path(out_md_raw)
-        thin = _inspect_thin_url_output(out_md_p, url, min_chars=min_chars)
-        if thin is not None:
-            return thin
-        try:
-            _, body_ok, _ = extract_frontmatter(out_md_p.read_text(encoding="utf-8", errors="replace"))
-            item["char_count"] = len(re.sub(r"[\s#*`>|\-_]+", "", body_ok))
-        except Exception:
-            pass
+    rel_out = item.get("output_rel_path")
+    out_md_p = (vault_dir / str(rel_out)) if rel_out else (Path(item["_out_path"]) if item.get("_out_path") else None)
+    if out_md_p is not None:
+        override, metrics = _evaluate_url_output(
+            out_md_p, url, min_chars=min_chars, depth=depth, parent_url=parent_url,
+        )
+        if override is not None:
+            return override
+        item.update(metrics)
     if defer_sync:
         return item
     all_md = _scan_vault_markdowns(vault_dir)
@@ -1088,6 +1169,9 @@ def _ingest_url_list_file(
     target_zone: Optional[str] = None,
     subdir: Optional[str] = None,
     fmt_options: Optional[Dict[str, Any]] = None,
+    min_chars: int = 300,
+    depth: int = 1,
+    parent_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     raw_text = src_file.read_text(encoding="utf-8-sig", errors="replace")
     parsed = parse_url_request(raw_text)
@@ -1125,6 +1209,8 @@ def _ingest_url_list_file(
         )
 
     results: List[Dict[str, Any]] = []
+    thin_items: List[Dict[str, Any]] = []
+    discarded_items: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     lib_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -1146,6 +1232,18 @@ def _ingest_url_list_file(
                     target_zone=target_zone,
                     subdir=subdir,
                 )
+                rel_out = item.get("output_rel_path")
+                if rel_out:
+                    override, metrics = _evaluate_url_output(
+                        vault_dir / str(rel_out), u, min_chars=min_chars, depth=depth, parent_url=parent_url,
+                    )
+                    if override is not None:
+                        if override.get("status") == "thin_with_links":
+                            thin_items.append(override)
+                        else:
+                            discarded_items.append(override)
+                        continue
+                    item.update(metrics)
                 results.append(item)
             except Exception as exc:
                 errors.append({"url": u, "reason": _scrub_paths(str(exc), ws_root, vault_dir)})
@@ -1162,22 +1260,48 @@ def _ingest_url_list_file(
         if rel:
             item["note_ref"] = n_map.get(rel)
 
+    log_ref_list = _append_url_ingest_log(
+        vault_dir=vault_dir,
+        vault_ref=vault_ref,
+        domain=domain,
+        note_reg=note_reg,
+        by=by,
+        subdir=subdir,
+        converted_items=results,
+        thin_items=thin_items,
+        discarded_items=discarded_items,
+        blocked_items=[{"source_name": e["url"], "code": "E_URL_FAILED", "reason": e["reason"]} for e in errors],
+    )
+
     trashed_list = False
     if not errors:
         _trash_dropzone_source(src_file, vault_dir)
         trashed_list = True
 
+    idx_cand_refs = [str(it["note_ref"]) for it in results if it.get("index_candidate") and it.get("note_ref")]
     out_list: Dict[str, Any] = {
         "source_name": src_file.name,
         "mode": "url-list",
         "url_count": len(urls),
         "converted_count": len(results),
+        "thin_with_links_count": len(thin_items),
+        "discarded_count": len(discarded_items),
         "failed_count": len(errors),
+        "blocked_count": len(errors),
+        "depth": depth,
+        "max_depth": MAX_URL_CRAWL_DEPTH,
+        "next_depth": depth + 1 if depth < MAX_URL_CRAWL_DEPTH else None,
+        "depth_limit_reached": depth >= MAX_URL_CRAWL_DEPTH,
+        "index_candidate_refs": idx_cand_refs,
         "list_archived_to_trash": trashed_list,
         "has_requirements": has_reqs,
         "results": results,
+        "thin_with_links": thin_items,
+        "discarded": discarded_items,
         "errors": errors,
     }
+    if log_ref_list:
+        out_list["ingest_log_ref"] = log_ref_list
     if not suppress_ticket:
         tinfo = pre_ticket or ensure_doc_ticket(
             ws_root,
@@ -1282,6 +1406,8 @@ def run_fmt(
     subdir: Optional[str] = None,
     fmt_options: Optional[Dict[str, Any]] = None,
     min_chars: Optional[int] = None,
+    depth: Optional[int] = None,
+    parent_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute KEK-blinded multimodal `fmt` pipeline across all 116 converters."""
     if file_name and ("/" in file_name or "\\" in file_name or ".." in file_name):
@@ -1313,6 +1439,7 @@ def run_fmt(
 
     # 1. URL / batch-URLs conversion mode
     if url_list:
+        eff_depth = _validate_crawl_depth(depth)
         domain = resolve_domain_scope(
             vault_dir=vault_dir,
             vault_ref=vault_ref,
@@ -1337,6 +1464,8 @@ def run_fmt(
                 target_zone=target_zone,
                 subdir=subdir,
                 min_chars=eff_min_chars,
+                depth=eff_depth,
+                parent_url=parent_url,
             )
             st_item = item.get("status")
             thin_list = [item] if st_item == "thin_with_links" else []
@@ -1350,6 +1479,7 @@ def run_fmt(
                     vault_dir=vault_dir, vault_ref=vault_ref, domain=domain, note_reg=note_reg,
                     by=by, subdir=subdir, converted_items=ok_list, thin_items=thin_list, discarded_items=disc_list, blocked_items=[],
                 )
+            idx_cand_refs = [str(it["note_ref"]) for it in ok_list if it.get("index_candidate") and it.get("note_ref")]
             out_url: Dict[str, Any] = {
                 "mode": "url",
                 "vault_ref": vault_ref,
@@ -1358,6 +1488,11 @@ def run_fmt(
                 "thin_with_links_count": len(thin_list),
                 "discarded_count": len(disc_list),
                 "blocked_count": 0,
+                "depth": eff_depth,
+                "max_depth": MAX_URL_CRAWL_DEPTH,
+                "next_depth": eff_depth + 1 if eff_depth < MAX_URL_CRAWL_DEPTH else None,
+                "depth_limit_reached": eff_depth >= MAX_URL_CRAWL_DEPTH,
+                "index_candidate_refs": idx_cand_refs,
                 "target_zone": item.get("target_zone"),
                 "results": ok_list,
                 "thin_with_links": thin_list,
@@ -1374,7 +1509,7 @@ def run_fmt(
                     ws_root,
                     vault_dir,
                     ticket_info=pre_ticket,
-                    note=f"单条 URL 转译入库：converted={len(ok_list)}, thin={len(thin_list)}, discarded={len(disc_list)}",
+                    note=f"单条 URL 转译入库（depth={eff_depth}）：converted={len(ok_list)}, thin={len(thin_list)}, discarded={len(disc_list)}",
                     mark_done=False,
                 )
                 out_url["doc_ticket"] = {k: v for k, v in dt.items() if k != "ticket_rel_path"}
@@ -1402,6 +1537,8 @@ def run_fmt(
                     subdir=subdir,
                     defer_sync=not dry_run,
                     min_chars=eff_min_chars,
+                    depth=eff_depth,
+                    parent_url=parent_url,
                 )
                 if res_one.get("status") == "thin_with_links":
                     thin_batch.append(res_one)
@@ -1420,7 +1557,7 @@ def run_fmt(
             n_map = note_reg.sync_paths(vault_ref, all_md)
             pub_batch = [it if it.get("already_ingested") else _to_public_fmt_item(it, n_map, vault_dir) for it in raw_batch]
             if pub_batch:
-                _append_journal_event(vault_dir, note_reg, vault_ref, "", f"批量 URL 入库（成功 {len(pub_batch)} 篇，待追查 {len(thin_batch)} 篇，抛弃 {len(disc_batch)} 篇，失败 {len(blocked_batch)} 篇）")
+                _append_journal_event(vault_dir, note_reg, vault_ref, "", f"批量 URL 入库（depth={eff_depth}，成功 {len(pub_batch)} 篇，待追查 {len(thin_batch)} 篇，自动删除 {len(disc_batch)} 篇，失败 {len(blocked_batch)} 篇）")
             log_ref_batch = _append_url_ingest_log(
                 vault_dir=vault_dir, vault_ref=vault_ref, domain=domain, note_reg=note_reg,
                 by=by, subdir=subdir, converted_items=pub_batch, thin_items=thin_batch, discarded_items=disc_batch, blocked_items=blocked_batch,
@@ -1428,6 +1565,7 @@ def run_fmt(
         else:
             pub_batch = raw_batch
 
+        idx_cand_batch = [str(it["note_ref"]) for it in pub_batch if it.get("index_candidate") and it.get("note_ref")]
         out_batch: Dict[str, Any] = {
             "mode": "url-batch",
             "vault_ref": vault_ref,
@@ -1437,6 +1575,11 @@ def run_fmt(
             "thin_with_links_count": len(thin_batch),
             "discarded_count": len(disc_batch),
             "blocked_count": len(blocked_batch),
+            "depth": eff_depth,
+            "max_depth": MAX_URL_CRAWL_DEPTH,
+            "next_depth": eff_depth + 1 if eff_depth < MAX_URL_CRAWL_DEPTH else None,
+            "depth_limit_reached": eff_depth >= MAX_URL_CRAWL_DEPTH,
+            "index_candidate_refs": idx_cand_batch,
             "results": pub_batch,
             "thin_with_links": thin_batch,
             "discarded": disc_batch,
@@ -1489,6 +1632,8 @@ def run_fmt(
             }
         if not _is_pdf_file(src_file) and rel.startswith("00-DropZone/") and src_file.suffix.lower() in (".md", ".markdown"):
             if parse_url_request(src_file.read_text(encoding="utf-8-sig", errors="replace")):
+                eff_depth = _validate_crawl_depth(depth)
+                eff_min_chars = 300 if min_chars is None else max(0, int(min_chars))
                 res = _ingest_url_list_file(
                     fmt_py=fmt_py,
                     src_file=src_file,
@@ -1506,6 +1651,9 @@ def run_fmt(
                     pre_ticket=pre_ticket,
                     target_zone=target_zone,
                     subdir=subdir,
+                    min_chars=eff_min_chars,
+                    depth=eff_depth,
+                    parent_url=parent_url,
                 )
                 if not dry_run:
                     _append_journal_event(vault_dir, note_reg, vault_ref, src_file.stem, f"URL 清单采集完成（{res['converted_count']} 篇）")
@@ -1686,8 +1834,11 @@ def run_url_ingest(
     target_zone: Optional[str] = None,
     subdir: Optional[str] = None,
     min_chars: Optional[int] = None,
+    depth: Optional[int] = None,
+    parent_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dedicated `url-ingest` action for URLs and DropZone URL-list cards."""
+    eff_depth = _validate_crawl_depth(depth)
     if url or urls:
         return run_fmt(
             vault_dir=vault_dir,
@@ -1706,6 +1857,8 @@ def run_url_ingest(
             target_zone=target_zone,
             subdir=subdir,
             min_chars=min_chars,
+            depth=eff_depth,
+            parent_url=parent_url,
         )
     if note_ref:
         rec = note_reg.resolve_handle(vault_ref, note_ref)
@@ -1715,6 +1868,7 @@ def run_url_ingest(
             raise VaultStoreError("E_PARAM_INVALID", "URL 清单卡必须位于 00-DropZone", exit_code=1)
         domain = _infer_dropzone_project_ref(vault_dir, vault_ref, proj_reg, rel, project_ref, scope)
         fmt_py = _resolve_fmt_python()
+        eff_min_chars = 300 if min_chars is None else max(0, int(min_chars))
         res = _ingest_url_list_file(
             fmt_py=fmt_py,
             src_file=src,
@@ -1730,6 +1884,9 @@ def run_url_ingest(
             ticket_id=ticket_id,
             target_zone=target_zone,
             subdir=subdir,
+            min_chars=eff_min_chars,
+            depth=eff_depth,
+            parent_url=parent_url,
         )
         if not dry_run:
             _append_journal_event(vault_dir, note_reg, vault_ref, src.stem, f"URL 清单采集完成（{res['converted_count']} 篇）")

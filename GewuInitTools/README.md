@@ -4,11 +4,17 @@
 
 ## 包含工具
 
-| 平台 | 脚本 | 基础 Python 缺省下载目标 | 生成网关启动器 |
-| :--- | :--- | :--- | :--- |
-| macOS (`arm64` / `x86_64`) | `GewuInitTools/Gewu_init_mac.sh` | `.runtime/install-env/python` (`CPython 3.12.16`) | `gewu.command` |
-| Linux (`x86_64` / `aarch64` glibc) | `GewuInitTools/Gewu_init_linux.sh` | `.runtime/install-env/python` (`CPython 3.12.16`) | `gewu.command` |
-| Windows (`x86_64` / `arm64`) | `GewuInitTools/Gewu_init_win.cmd` | `.runtime\install-env\python` (`CPython 3.12.16`) | `gewu.cmd` |
+| 平台 | 脚本 | 基础 Python 缺省下载目标 | Git 缺省处理 | 生成网关启动器 |
+| :--- | :--- | :--- | :--- | :--- |
+| macOS (`arm64` / `x86_64`) | `GewuInitTools/Gewu_init_mac.sh` | `.runtime/install-env/python` (`CPython 3.12.16`) | 检测系统 Git（缺省提供国内 Homebrew 镜像指引） | `gewu.command` |
+| Linux (`x86_64` / `aarch64` glibc) | `GewuInitTools/Gewu_init_linux.sh` | `.runtime/install-env/python` (`CPython 3.12.16`) | 检测系统 Git（缺省提供 apt/dnf 国内源指引） | `gewu.command` |
+| Windows (`x86_64` / `arm64`) | `GewuInitTools/Gewu_init_win.cmd` | `.runtime\install-env\python` (`CPython 3.12.16`) | 缺省自动下载便携版 `MinGit 2.56.1` 到 `.runtime\install-env\git` | `gewu.cmd` |
+
+## 国内镜像与自动回退策略
+
+- **独立 CPython（`python-build-standalone 3.12.16+20261110`）**：`npmmirror`（阿里） → 南京大学 `mirror.nju.edu.cn` → GitHub 官方源，全链路强制校验原版 SHA-256。
+- **Windows 便携 Git（`MinGit 2.56.1`）**：华为云 `repo.huaweicloud.com` → `npmmirror` → GitHub 官方源，强制校验官方 SHA-256 并自动接入 `gewu.cmd` `PATH`。
+- **PyPI 依赖库**：默认 `mirrors.aliyun.com/pypi/simple/` → 失败自动回退清华 `pypi.tuna.tsinghua.edu.cn/simple`（支持通过 `GEWU_PIP_INDEX_URL` 自定义覆盖）。
 
 ## 解决的问题
 

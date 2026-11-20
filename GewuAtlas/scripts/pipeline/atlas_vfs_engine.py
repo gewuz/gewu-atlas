@@ -598,7 +598,9 @@ def _downgrade_refs_in_vault(
 
         if suf != ".md":
             continue
-        old_txt = ref_file.read_text(encoding="utf-8")
+        old_txt = ref_file.read_text(encoding="utf-8", errors="replace")
+        if old_txt.lstrip("\ufeff \t\r\n").startswith("%PDF-"):
+            continue
         file_hits = 0
 
         def _downgrade_seg(seg: str) -> str:
@@ -619,7 +621,8 @@ def _downgrade_refs_in_vault(
                 label = m.group(2)
                 raw = m.group(3)
                 inner = raw[1:-1] if raw.startswith("<") else raw
-                target_url = inner.split("#", 1)[0].split()[0].strip() if inner.strip() else ""
+                target_head = inner.split("#", 1)[0].strip()
+                target_url = (target_head if raw.startswith("<") else target_head.split()[0]) if target_head else ""
                 if not target_url or not _match_candidate_to_targets(target_url, ref_file, vault_dir, target_set, bare_names):
                     return m.group(0)
                 file_hits += 1

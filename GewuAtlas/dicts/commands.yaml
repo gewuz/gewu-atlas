@@ -377,8 +377,8 @@ command_groups:
       - name: "ingest"
         mode: "write"
         surface: "core"
-        slots: ["[--ref]", "[--mode]", "[--file_name]", "[--input_file]", "[--url]", "[--urls]", "[--note_ref]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--auto_slice]", "[--level]", "[--adaptive]", "[--deep]", "[--annotate_images]", "[--dry_run]", "[--by]"]
-        summary: "统一摄取入口（--mode auto|list|import|url|fmt|route；支持 --urls 批量抓取、短页<300字质检、工作台采集台账及 --auto_slice true）"
+        slots: ["[--ref]", "[--mode]", "[--file_name]", "[--input_file]", "[--url]", "[--urls]", "[--note_ref]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--depth]", "[--parent_url]", "[--auto_slice]", "[--level]", "[--adaptive]", "[--deep]", "[--annotate_images]", "[--dry_run]", "[--by]"]
+        summary: "统一摄取入口（--mode auto|list|import|url|fmt|route；支持 --urls 批量抓取、<=300字无链自动删除、depth 1..3 多层追查与 --auto_slice true）"
       - name: "inbox-list"
         mode: "read"
         slots: ["--ref", "[--offset]", "[--top_k]"]
@@ -389,8 +389,8 @@ command_groups:
         summary: "将受控输入附件导入 10-Attachments 或 DropZone"
       - name: "url-ingest"
         mode: "write"
-        slots: ["--ref", "[--note_ref]", "[--file_name]", "[--url]", "[--urls]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--by]", "[--dry_run]"]
-        summary: "SSRF 防护单条/批量 URL 抓取（默认 <300 字短页含链提示追查/无链抛弃，自动写入工作台采集台账 url-ingest-log.md）"
+        slots: ["--ref", "[--note_ref]", "[--file_name]", "[--url]", "[--urls]", "[--project_ref]", "[--scope]", "[--target_zone]", "[--subdir]", "[--min_chars]", "[--depth]", "[--parent_url]", "[--by]", "[--dry_run]"]
+        summary: "SSRF 防护 URL 抓取（顺风车检查<=300字且无外链即自动删除；目录页返回外链供 Agent 筛选再抓至多3层，配 [INGEST_GATE] 胶囊提醒）"
       - name: "note-route"
         mode: "write"
         slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--target_zone]", "[--project_ref]", "[--scope]", "[--by]"]

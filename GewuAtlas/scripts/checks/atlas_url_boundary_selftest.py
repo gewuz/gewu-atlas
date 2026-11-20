@@ -46,4 +46,46 @@ class URLBoundaryTests(unittest.TestCase):
   response=mock.MagicMock();response.__enter__.return_value.read.return_value=b'{"Status":0,"Answer":[{"type":1,"data":"127.0.0.1","TTL":0}]}'
   opener=mock.Mock();opener.open.return_value=response
   with mock.patch.object(helper.socket,'getaddrinfo',return_value=[(2,1,6,'',('198.18.0.1',443))]),mock.patch.object(helper.urllib.request,'build_opener',return_value=opener):self.code('E_URL_POLICY',self.check)
+ def test_empty_short_page_without_links_is_auto_deleted(self):
+  md=self.root/'empty_stub.md'
+  md.write_text('---\ntitle: "Empty"\n---\n\n> [!NOTE] 离线网页转译提示\n> 本文由本地 HTML 文档结构化清洗脱水转译。\n\n暂无正文，请稍后再试。\n',encoding='utf-8')
+  res=engine._inspect_thin_url_output(md,'https://example.com/empty',min_chars=300,depth=1)
+  self.assertIsNotNone(res)
+  self.assertEqual(res['status'],'discarded_too_short')
+  self.assertTrue(res['auto_deleted'])
+  self.assertFalse(md.exists())
+ def test_pure_directory_over_300_raw_chars_detected_and_deleted(self):
+  md=self.root/'dir_only.md'
+  items='\n'.join([f'- [Subsystem Guide {i}: Architecture & Design Reference](https://example.com/docs/sub{i})' for i in range(1,12)])
+  md.write_text(f'---\ntitle: "Docs Index"\n---\n\n# 目录\n\n{items}\n',encoding='utf-8')
+  res=engine._inspect_thin_url_output(md,'https://example.com/docs',min_chars=300,depth=1)
+  self.assertIsNotNone(res)
+  self.assertEqual(res['status'],'thin_with_links')
+  self.assertTrue(res['is_directory_only'])
+  self.assertEqual(res['next_depth'],2)
+  self.assertFalse(res['depth_limit_reached'])
+  self.assertEqual(len(res['extracted_links']),11)
+  self.assertFalse(md.exists())
+ def test_substantive_article_with_inline_links_is_kept(self):
+  md=self.root/'real_article.md'
+  para=('这是一篇包含真实技术原理推导与状态机分析的深度工程文档，详细解释了循环边界、事件溯源与容错契约。' * 12)
+  md.write_text(f'---\ntitle: "Real Article"\n---\n\n{para}\n参见 [官方说明](https://example.com/ref)。\n',encoding='utf-8')
+  override,metrics=engine._evaluate_url_output(md,'https://example.com/article',min_chars=300,depth=2)
+  self.assertIsNone(override)
+  self.assertGreaterEqual(metrics['prose_chars'],300)
+  self.assertFalse(metrics.get('index_candidate',False))
+  self.assertTrue(md.exists())
+ def test_link_heavy_borderline_index_flagged_for_cleanup(self):
+  md=self.root/'borderline_index.md'
+  lines='\n'.join([f'- [Topic {i}](https://example.com/t{i})：简述模块第{i}部分功能与架构说明。' for i in range(1,22)])
+  md.write_text(f'---\ntitle: "Section Index"\n---\n\n{lines}\n',encoding='utf-8')
+  override,metrics=engine._evaluate_url_output(md,'https://example.com/index',min_chars=300,depth=1)
+  self.assertIsNone(override)
+  self.assertTrue(metrics.get('index_candidate'))
+  self.assertEqual(metrics.get('link_count'),21)
+ def test_crawl_depth_limit_enforced_at_3(self):
+  self.assertEqual(engine._validate_crawl_depth(None),1)
+  self.assertEqual(engine._validate_crawl_depth(3),3)
+  self.code('E_PARAM_INVALID',lambda:engine._validate_crawl_depth(4))
+  self.code('E_PARAM_INVALID',lambda:engine._validate_crawl_depth(0))
 if __name__=='__main__':unittest.main()

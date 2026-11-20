@@ -11,10 +11,13 @@ if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 set "DEFAULT_PY_VERSION=3.12.16"
 set "DEFAULT_PY_TAG=20261110"
-set "DEFAULT_PY_URL_X64=https://github.com/astral-sh/python-build-standalone/releases/download/%DEFAULT_PY_TAG%/cpython-%DEFAULT_PY_VERSION%%%2B%DEFAULT_PY_TAG%-x86_64-pc-windows-msvc-install_only.tar.gz"
+set "DEFAULT_PY_FILE_X64=cpython-%DEFAULT_PY_VERSION%%%2B%DEFAULT_PY_TAG%-x86_64-pc-windows-msvc-install_only.tar.gz"
 set "DEFAULT_PY_SHA_X64=e23fe5b16926de1d81661b1a97352e89fb167549c55a6825796ccd0f32ec7f1b"
-set "DEFAULT_PY_URL_ARM64=https://github.com/astral-sh/python-build-standalone/releases/download/%DEFAULT_PY_TAG%/cpython-%DEFAULT_PY_VERSION%%%2B%DEFAULT_PY_TAG%-aarch64-pc-windows-msvc-install_only.tar.gz"
+set "DEFAULT_PY_FILE_ARM64=cpython-%DEFAULT_PY_VERSION%%%2B%DEFAULT_PY_TAG%-aarch64-pc-windows-msvc-install_only.tar.gz"
 set "DEFAULT_PY_SHA_ARM64=7122bf62a0cf601527ba62e19ca715d64db86b269765da23937e9ac7f968f39c"
+set "DEFAULT_PY_MIRROR_1=https://registry.npmmirror.com/-/binary/python-build-standalone/%DEFAULT_PY_TAG%"
+set "DEFAULT_PY_MIRROR_2=https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/%DEFAULT_PY_TAG%"
+set "DEFAULT_PY_MIRROR_3=https://github.com/astral-sh/python-build-standalone/releases/download/%DEFAULT_PY_TAG%"
 
 set "WS_ARG="
 set "EXPLICIT_PY="
@@ -238,35 +241,75 @@ if "%OFFLINE%"=="1" (
   exit /b 2
 )
 
-set "DL_URL=%PY_URL%"
-set "EXPECTED_SHA=%PY_SHA%"
-if not defined DL_URL (
-  if "%HOST_ARCH%"=="arm64" (
-    set "DL_URL=%DEFAULT_PY_URL_ARM64%"
-    set "EXPECTED_SHA=%DEFAULT_PY_SHA_ARM64%"
-  ) else (
-    set "DL_URL=%DEFAULT_PY_URL_X64%"
-    set "EXPECTED_SHA=%DEFAULT_PY_SHA_X64%"
-  )
-)
-
 set "DL_TMP=%TEMP%\gewu-py-dl-%RANDOM%%RANDOM%"
 mkdir "%DL_TMP%" 2>nul
 set "SRC_ARCHIVE=%DL_TMP%\cpython-standalone.tar.gz"
 set "ARCHIVE_CLEANUP=1"
 echo Local Python 3.9+ unavailable; downloading Windows (%HOST_ARCH%) standalone CPython %DEFAULT_PY_VERSION%... 1>&2
 
-where curl.exe >nul 2>nul
-if not errorlevel 1 (
-  curl.exe -fL --retry 3 --connect-timeout 20 -o "%SRC_ARCHIVE%" "%DL_URL%"
-  if not errorlevel 1 goto verify_py_archive
+if defined PY_URL (
+  set "EXPECTED_SHA=%PY_SHA%"
+  set "DL_CAND_1=%PY_URL%"
+  set "DL_CAND_2="
+  set "DL_CAND_3="
+) else (
+  if "%HOST_ARCH%"=="arm64" (
+    set "PY_FILE=%DEFAULT_PY_FILE_ARM64%"
+    set "EXPECTED_SHA=%DEFAULT_PY_SHA_ARM64%"
+  ) else (
+    set "PY_FILE=%DEFAULT_PY_FILE_X64%"
+    set "EXPECTED_SHA=%DEFAULT_PY_SHA_X64%"
+  )
+  set "DL_CAND_1=%DEFAULT_PY_MIRROR_1%/%PY_FILE%"
+  set "DL_CAND_2=%DEFAULT_PY_MIRROR_2%/%PY_FILE%"
+  set "DL_CAND_3=%DEFAULT_PY_MIRROR_3%/%PY_FILE%"
 )
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri $env:DL_URL -OutFile $env:SRC_ARCHIVE"
-if errorlevel 1 (
+
+set "DL_OK=0"
+for %%U in ("%DL_CAND_1%" "%DL_CAND_2%" "%DL_CAND_3%") do (
+  if not "%%~U"=="" if "%DL_OK%"=="0" (
+    set "DL_URL=%%~U"
+    call :download_and_check_py
+  )
+)
+if not "%DL_OK%"=="1" (
   rmdir /s /q "%DL_TMP%" 2>nul
-  echo Failed to download standalone CPython archive. 1>&2
+  echo Failed to download standalone CPython archive from China mirrors and GitHub. 1>&2
   exit /b 2
 )
+goto after_verify_py_archive
+
+:download_and_check_py
+if exist "%SRC_ARCHIVE%" del /f /q "%SRC_ARCHIVE%" 2>nul
+echo   * Trying mirror: %DL_URL% 1>&2
+set "DL_STEP_OK=0"
+where curl.exe >nul 2>nul
+if not errorlevel 1 (
+  curl.exe -fL --retry 2 --connect-timeout 15 -o "%SRC_ARCHIVE%" "%DL_URL%"
+  if not errorlevel 1 set "DL_STEP_OK=1"
+)
+if "%DL_STEP_OK%"=="0" (
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri $env:DL_URL -OutFile $env:SRC_ARCHIVE"
+  if not errorlevel 1 set "DL_STEP_OK=1"
+)
+if "%DL_STEP_OK%"=="0" (
+  echo   ! Mirror download failed, trying next mirror... 1>&2
+  exit /b 0
+)
+if defined EXPECTED_SHA (
+  set "ACTUAL_SHA="
+  for /f "usebackq delims=" %%H in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-FileHash -LiteralPath $env:SRC_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()" 2^>nul`) do set "ACTUAL_SHA=%%H"
+  if not defined ACTUAL_SHA (
+    for /f "tokens=*" %%H in ('certutil -hashfile "%SRC_ARCHIVE%" SHA256 ^| findstr /R /I "^[0-9a-f][0-9a-f ]*$"') do set "ACTUAL_SHA=%%H"
+  )
+  if defined ACTUAL_SHA set "ACTUAL_SHA=%ACTUAL_SHA: =%"
+  if /I not "%ACTUAL_SHA%"=="%EXPECTED_SHA%" (
+    echo   ! Mirror archive SHA-256 mismatch (actual=%ACTUAL_SHA%), trying next mirror... 1>&2
+    exit /b 0
+  )
+)
+set "DL_OK=1"
+exit /b 0
 
 :verify_py_archive
 if defined EXPECTED_SHA (
@@ -282,6 +325,8 @@ if defined EXPECTED_SHA (
     exit /b 2
   )
 )
+
+:after_verify_py_archive
 
 where tar.exe >nul 2>nul
 if errorlevel 1 (
@@ -341,6 +386,7 @@ __GEWU_INIT_WIN_PY__
 import argparse
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -349,6 +395,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 
 SKIP_SCAN_DIRS = frozenset(
     {"GewuTrack", "GewuInitTools", "Volumes", "demo", "build", "dist", "logs", "backups", "instances", "outputs"}
@@ -747,22 +796,48 @@ def install_domain_deps(py, root, packages, offline, wheels_dir, index_url):
     cmd = [str(py), "-I", "-X", "utf8", "-B", "-m", "pip", "install", "--disable-pip-version-check"]
     if offline:
         cmd += ["--no-index"]
-    else:
-        cmd += ["--index-url", index_url]
-    if wheels_dir:
-        cmd += ["--find-links", str(wheels_dir)]
-    cmd += ["-r", str(req_stage)]
-    notice("▶ 正在安装各域依赖库（离线模式）..." if offline else f"▶ 正在安装各域依赖库（源：{index_url}）...")
-    proc = subprocess.run(
-        cmd,
-        env=pip_env(),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=900,
-    )
-    need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        if wheels_dir:
+            cmd += ["--find-links", str(wheels_dir)]
+        cmd += ["-r", str(req_stage)]
+        notice("▶ 正在安装各域依赖库（离线模式）...")
+        proc = subprocess.run(
+            cmd,
+            env=pip_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=900,
+        )
+        need(proc.returncode == 0, "pip install 失败：" + (proc.stderr or proc.stdout)[-2000:])
+        return "installed"
+
+    mirrors = [index_url]
+    fallback_idx = "https://pypi.tuna.tsinghua.edu.cn/simple"
+    if not os.environ.get("GEWU_PIP_INDEX_URL") and fallback_idx not in mirrors:
+        mirrors.append(fallback_idx)
+    last_err = ""
+    for idx_url in mirrors:
+        run_cmd = list(cmd) + ["--index-url", idx_url]
+        if wheels_dir:
+            run_cmd += ["--find-links", str(wheels_dir)]
+        run_cmd += ["-r", str(req_stage)]
+        notice(f"▶ 正在安装各域依赖库（源：{idx_url}）...")
+        proc = subprocess.run(
+            run_cmd,
+            env=pip_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=900,
+        )
+        if proc.returncode == 0:
+            return "installed"
+        last_err = (proc.stderr or proc.stdout)[-2000:]
+        if idx_url != mirrors[-1]:
+            notice(f"  ! 依赖源 {idx_url} 安装失败，自动切换备源重试...", "warn")
+    need(False, "pip install 失败：" + last_err)
     return "installed"
 
 
@@ -846,6 +921,7 @@ def ensure_launchers(root, check_only):
     expected_bytes = (
         "@echo off\r\n"
         "setlocal DisableDelayedExpansion\r\n"
+        'if exist "%~dp0.runtime\\install-env\\git\\cmd\\git.exe" set "PATH=%~dp0.runtime\\install-env\\git\\cmd;%PATH%"\r\n'
         '"%~dp0.runtime\\install-env\\venv\\Scripts\\python.exe" -I -X utf8 -B "%~dp0gewu" %*\r\n'
         "exit /b %ERRORLEVEL%\r\n"
     ).encode("ascii")
@@ -915,12 +991,89 @@ def maybe_write_receipt(root, host_arch, py_source, domains, dep_checks, deps_ac
     return False
 
 
-def check_git(root, skip_git_check, skip_git_init, check_only):
-    git_bin = shutil.which("git")
+MINGIT_VERSION = "2.56.1"
+MINGIT_TAG = "v2.56.1.windows.1"
+MINGIT_SPECS = {
+    "x86_64": ("MinGit-2.56.1-64-bit.zip", "4a92850b6e917da4fd010669b614b55dccf5b0ec333a534cc4be4700dfefdafd"),
+    "arm64": ("MinGit-2.56.1-arm64.zip", "96571e442e90523a90e5fd8661b4c4e43bc192910f3c6db938816e6955b4cc8c"),
+}
+MINGIT_MIRRORS = (
+    f"https://repo.huaweicloud.com/git-for-windows/{MINGIT_TAG}",
+    f"https://registry.npmmirror.com/-/binary/git-for-windows/{MINGIT_TAG}",
+    f"https://github.com/git-for-windows/git/releases/download/{MINGIT_TAG}",
+)
+
+
+def install_portable_mingit(root, host_arch):
+    fname, expected_sha = MINGIT_SPECS.get(host_arch, MINGIT_SPECS["x86_64"])
+    git_dir = root / ".runtime/install-env/git"
+    git_exe = git_dir / "cmd/git.exe"
+    notice(f"▶ 未检测到本机 Git，正在从国内镜像下载便携版 MinGit {MINGIT_VERSION} ({host_arch}) 到工作区...", "warn")
+    with tempfile.TemporaryDirectory(prefix="gewu-git-dl-") as td:
+        archive = Path(td) / fname
+        downloaded = False
+        for base in MINGIT_MIRRORS:
+            url = f"{base}/{fname}"
+            notice(f"  • 尝试镜像：{url}")
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "GewuInitTools/1.0"})
+                with urllib.request.urlopen(req, timeout=30) as resp, archive.open("wb") as fh:
+                    h = hashlib.sha256()
+                    while True:
+                        chunk = resp.read(262144)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        h.update(chunk)
+                actual_sha = h.hexdigest().lower()
+                if actual_sha != expected_sha:
+                    notice(f"  ! 镜像文件 SHA-256 不匹配（actual={actual_sha}），切换下一个源...", "warn")
+                    continue
+                downloaded = True
+                break
+            except Exception as exc:
+                notice(f"  ! 镜像下载失败（{exc}），切换下一个源...", "warn")
+        need(downloaded, f"下载便携版 MinGit 失败（已尝试华为云、npmmirror 与 GitHub）；可手动安装 Git for Windows 或使用 --skip-git-check")
+
+        install_env = root / ".runtime/install-env"
+        install_env.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=".git-stage-", dir=str(install_env)))
+        try:
+            stage_resolved = stage.resolve()
+            with zipfile.ZipFile(archive, "r") as zf:
+                for member in zf.infolist():
+                    target = (stage / member.filename).resolve()
+                    need(
+                        target == stage_resolved or stage_resolved in target.parents,
+                        f"MinGit 压缩包路径越界：{member.filename}",
+                    )
+                zf.extractall(stage)
+            need((stage / "cmd/git.exe").is_file(), "MinGit 解压后缺少 cmd/git.exe")
+            if git_dir.exists():
+                shutil.rmtree(git_dir)
+            stage.rename(git_dir)
+        except Exception:
+            if stage.exists():
+                shutil.rmtree(stage, ignore_errors=True)
+            raise
+    return str(git_exe)
+
+
+def check_git(root, host_arch, offline, skip_git_check, skip_git_init, check_only):
+    candidates = []
+    which_git = shutil.which("git")
+    if which_git:
+        candidates.append(which_git)
+    portable_git = root / ".runtime/install-env/git/cmd/git.exe"
+    if portable_git.is_file() and str(portable_git) not in candidates:
+        candidates.append(str(portable_git))
+
+    git_bin = None
     git_ver = None
-    if git_bin:
+    git_source = "local-system"
+    for cand in candidates:
         proc = subprocess.run(
-            [git_bin, "--version"],
+            [cand, "--version"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -928,20 +1081,47 @@ def check_git(root, skip_git_check, skip_git_init, check_only):
             timeout=10,
         )
         if proc.returncode == 0 and proc.stdout.strip():
+            git_bin = cand
             git_ver = proc.stdout.strip()
-        else:
+            git_source = "workspace-portable-mingit" if Path(cand).resolve() == portable_git.resolve() else "local-system"
+            break
+
+    if not git_bin and not offline and not check_only and not skip_git_check:
+        try:
+            git_bin = install_portable_mingit(root, host_arch)
+            proc = subprocess.run(
+                [git_bin, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                git_ver = proc.stdout.strip()
+                git_source = "workspace-portable-mingit"
+            else:
+                git_bin = None
+        except Exception as exc:
+            notice(f"  ! 自动下载便携版 MinGit 失败：{exc}", "warn")
             git_bin = None
+
     if not git_bin:
-        msg = "未检测到 Git（GewuTrack / 域变更引擎依赖 git）；请安装 Git for Windows（winget install Git.Git）并确保 git 在 PATH 中"
+        msg = "未检测到 Git（域变更引擎依赖 git）；请从国内镜像（https://repo.huaweicloud.com/git-for-windows/ 或 https://registry.npmmirror.com/-/binary/git-for-windows/）安装 Git for Windows 并确保 git 在 PATH 中"
         if skip_git_check:
             notice(f"  ! {msg}（已通过 --skip-git-check 忽略）", "warn")
             return {
                 "available": False,
                 "version": None,
+                "source": None,
                 "is_git_repo": (root / ".git").exists(),
                 "repo_action": "skipped-no-git",
             }
         raise ValueError(msg)
+
+    git_cmd_dir = str(Path(git_bin).resolve().parent)
+    if git_source == "workspace-portable-mingit" and git_cmd_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = git_cmd_dir + os.pathsep + os.environ.get("PATH", "")
 
     has_git_dir = (root / ".git").exists()
     repo_action = "already-initialized"
@@ -1016,7 +1196,7 @@ def main():
     py_source = os.environ.get("GEWU_INIT_PY_SOURCE") or "local-system"
     host_arch = os.environ.get("GEWU_INIT_HOST_ARCH") or "x86_64"
     wheels_dir = args.wheels_dir.resolve() if args.wheels_dir else None
-    index_url = os.environ.get("GEWU_PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple")
+    index_url = os.environ.get("GEWU_PIP_INDEX_URL", "https://mirrors.aliyun.com/pypi/simple/")
     machine = args.json or not sys.stdout.isatty()
 
     try:
@@ -1024,7 +1204,7 @@ def main():
         if wheels_dir is not None:
             need(wheels_dir.is_dir(), f"离线 wheels 目录不存在：{wheels_dir}")
 
-        git_info = check_git(ws_root, args.skip_git_check, args.skip_git_init, args.check_only)
+        git_info = check_git(ws_root, host_arch, args.offline, args.skip_git_check, args.skip_git_init, args.check_only)
         if git_info["available"]:
             notice(f"✓ Git 就绪：{git_info['version']}")
 
