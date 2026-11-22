@@ -1,8 +1,8 @@
 # ==============================================================================
 # metadata.yaml - 格物志 V2 全局 Frontmatter 元数据双层正交字典 (迁移自 116 并对齐 GewuAtlas)
 # ==============================================================================
-version: "2.3.0"
-updated: "2026-11-15"
+version: "2.5.0"
+updated: "2026-11-22"
 description: >-
   格物志 Frontmatter 元数据双层正交字典契约：六项共有基石 + 类型自有扩展 + 署名三元组溯源；
   在 116-gwf-v2-R6 基础上同步 GewuAtlas 的 memo/project、五类工单（SYS/DOC/MSG/TASK/SLIP），
@@ -276,18 +276,10 @@ schemas:
       project_id: { type: string }
       type: { type: string, ref_vocab: type }
       aliases: { type: "list[string]" }
-      source: { type: string }
-      sources: { type: "list[string]" }
-      toc: { type: "list[string]" }
-      slices: { type: "list[string]" }
-      provenance: { type: "list[string]" }
-      map: { type: "list[string]" }
-      moc: { type: "list[string]" }
       reviewed_by: { type: string, ref_vocab: reviewed_by }
       private: { type: boolean }
       private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
       processed: { type: boolean }
-      extracted_to: { type: "list[string]" }
       combined_from: { type: "list[string]" }
       split_from: { type: string }
       created_by: { type: string }
@@ -314,8 +306,6 @@ schemas:
       source: { type: string }
       source_url: { type: string }
       original_url: { type: string }
-      map: { type: "list[string]" }
-      moc: { type: "list[string]" }
       channel: { type: string }
       processed: { type: boolean }
       original_file: { type: string }
@@ -326,7 +316,6 @@ schemas:
       sheet_count: { type: integer }
       total_rows: { type: integer }
       sheets: { type: "list[string]" }
-      extracted_to: { type: "list[string]" }
       private: { type: boolean }
       private_since: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
       project_id: { type: string }
@@ -348,14 +337,7 @@ schemas:
       review_mode: { type: string, ref_vocab: default_mode }
       type: { type: string, ref_vocab: type }
       read_status: { type: string, ref_vocab: read_status }
-      moc: { type: "list[string]" }
-      map: { type: "list[string]" }
       aliases: { type: "list[string]" }
-      source: { type: string }
-      toc: { type: "list[string]" }
-      sources: { type: "list[string]" }
-      provenance: { type: "list[string]" }
-      slices: { type: "list[string]" }
       supersedes: { type: string }
       superseded_by: { type: string }
       combined_from: { type: "list[string]" }
@@ -439,7 +421,6 @@ schemas:
       split_level: { type: integer }
       processed_mode: { type: string }
       extracted: { type: boolean }
-      extracted_to: { type: "list[string]" }
       project_id: { type: string }
       created_by: { type: string }
       updated_by: { type: string }

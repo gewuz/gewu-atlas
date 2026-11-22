@@ -1,6 +1,6 @@
 ---
 name: atlas-project
-description: Atlas 知识库（vault）与课题域（project_ref）管理、多轮研究工作台协调、课题合并拆分与状态流转（create / list / get / rename / merge / split / undo / publish / archive / trash / workbench-workspace / workbench-preset）。
+description: Atlas 知识库（vault）与课题域（project_ref）管理、课题一屏全景（project-brief）、多轮研究工作台协调、课题合并拆分与状态流转（create / list / get / brief / rename / merge / split / undo / publish / archive / trash / workbench-workspace / workbench-preset）。
 ---
 
 # 库与课题 · 空间分配、生命周期与工作台管理
@@ -15,8 +15,8 @@ description: Atlas 知识库（vault）与课题域（project_ref）管理、多
     ./gewu atlas --action project-create --ref <vlt_01> --title "<课题名称>" --agent <agent_name> [--default_mode auto|supervised] [--preset engineering|academic|multi-agent|solo]
     ```
     返回体 `data.workspace.subdirs` 直接提供 `ws-<agent>/drafts` 与 `ws-<agent>/source`，无需再单独往返调用 `workbench-workspace`（如需单独管理工作台或预设，仍可调 `workbench-workspace` 与 `workbench-preset`）。
-- **课题查询、重构与状态流转**：
-  - 查询与历史：`project-list`、`project-get`、`project-rename`、`project-history`；
+- **课题查询、一屏全景、重构与状态流转**：
+  - 查询与全景：`project-brief`（一屏返回分区统计、核心卡片句柄目录与双链骨架，替代多步探查）、`project-list`、`project-get`、`project-rename`、`project-history`；
   - 合并、拆分与撤回：`project-merge`、`project-split`、后悔药 `project-undo`；
   - 公开、退网、归档与回收：`project-publish`（须人类确认）、`project-unpublish`、`project-restore-links`、`project-archive`、`project-reopen`、`project-trash`（配合 `trash --mode restore --scope project` 恢复）。
 

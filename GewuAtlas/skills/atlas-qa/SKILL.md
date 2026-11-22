@@ -1,13 +1,13 @@
 ---
 name: atlas-qa
-description: Atlas 找与读（search / locate / list / read / batch-get / file-read / links / answer）：单步查库定位、跨库或单库检索、批量读取多卡正文、带 YAML 原文读取、工作台/DropZone UTF-8 源码直读，以及多源只读循证成文问答。
+description: Atlas 找与读（search / locate / list / read / batch-get / outline / note-grep / project-brief / file-read / links / answer）：单步查库定位、跨库或单库检索、一屏课题全景（project-brief）、受控跨卡正则检索（note-grep）、长文大纲行号读取（--outline）、批量读取多卡正文、工作台源码直读与多源只读循证成文问答。
 ---
 
 # 找与读 · 检索、批量实读与循证成文交付
 
 ## 1. 三档检索模式（按场景直选，告别盲目读全文）
 
-进库先用 `./gewu atlas --action vault` 拿库句柄，再按场景选用 `note-search --mode <locate|passage|deep>`（默认 `passage`）：
+进库先用 `./gewu atlas --action vault` 拿库句柄（多轮深挖建议先执行 `./gewu atlas daemon start` 预热内存索引，结束再 `daemon stop`），再按场景选用 `note-search --mode <locate|passage|deep>`（默认 `passage`）：
 
 | 模式 (`--mode`) | 适用场景 | 返回载荷 | 后续动作 |
 | :--- | :--- | :--- | :--- |
@@ -15,10 +15,11 @@ description: Atlas 找与读（search / locate / list / read / batch-get / file-
 | **`passage`**（默认） | 常规问答、查概念/参数/结论 | `note_ref`、`title`、`score`（0–100）、`doc_type`、`updated`、`section`、**按文档类型自适应提取的 `passage`（原子/书签卡返全文、MOC/Artifact 返命中完整章节、其他文档返命中完整段落）** | 胶囊返回 `[QA_GATE: PASSAGE_READY]`：**常规问答可直接基于 `passage` 与 `nte_XX` 作答，无需二次 `note-get`**；仅当 `passage_truncated=true` 或需跨卡深度综合时补读全文 |
 | **`deep`** | 专题深挖、溯源上下游、梳理图谱脉络 | `note_ref`、`title`、`score`、`doc_type`、`summary`、`updated`、**入链 Top 3（`in_links_top3`）**、**出链 Top 3（`out_links_top3`）** | 顺高分入链（上游 MOC/引用方）与出链（下游证据）调用 `note-get --note_refs` 精准下钻 |
 
-- **按需批量实读全文**：仅当多卡深度综合、`passage_truncated=true` 或需核对完整上下文时，一次批量调用：
-  ```bash
-  ./gewu atlas --action note-get --ref <vlt_XX> --note_refs nte_01,nte_02,nte_03
-  ```
+- **按需批量实读全文与低回合读原语**：
+  - 批量读正文：`./gewu atlas --action note-get --ref <vlt_XX> --note_refs nte_01,nte_02,nte_03`
+  - 长文先看大纲与行号：`./gewu atlas --action note-get --ref <vlt_XX> --note_ref <nte_01> --outline true`（再按 `--section` 或 `--start_line/--end_line` 精准精读）
+  - 跨卡精准 grep（字面/正则）：`./gewu atlas --action note-grep --ref <vlt_XX> --pattern "<关键词或正则>" [--regex true] [--with_section true] [--project_ref <prj_XX>]`（加 `--with_section true` 直接带回命中所属完整章节，免二次 `note-get`）
+  - 一屏全景与只读合批：`./gewu atlas --action project-brief --ref <vlt_XX> [--project_ref <prj_XX>]`；多项只读探查可直接打包进 `batch --json-stdin`（自动走共享锁、零 DOC 票/零快照快路径，支持 `$g.note_refs` 将 grep/search 命中串联进下一步 `note-get`）
 - 需看 YAML 原文或分段时传 `--note_ref <nte_01> --raw true [--start_line 1 --end_line 200]`。
 - 全库或课题域盘点清单用 `note-list --ref <vlt_XX> [--project_ref <prj_XX>] [--zone ...]`；只读全库图谱与孤岛统计用 `graph-report --ref <vlt_XX>`，全库双链与死链巡检用 `vfs-links --ref <vlt_XX>`；读工作台源码/非 Markdown 文本用 `file-read --ref <vlt_XX> [--project_ref <prj_XX>] --zone workbench [--subdir <目录>] [--file_name <文件名>]`；收件箱用 `ingest --ref <vlt_XX> --mode list`；日记用 `journal`；书签用 `slip --mode get`。
 

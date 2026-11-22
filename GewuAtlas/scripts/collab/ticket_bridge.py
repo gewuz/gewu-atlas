@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,15 +22,102 @@ from notes.atlas_yamlmini import fm_scalar
 from storage.vault_kek_store import VaultStoreError
 
 TICKET_VOLUME_REL = "./Volumes/GewuTicket-data"
+_INPROC_LOCK = threading.RLock()
+_INPROC_TICKET_CLI_CACHE: Dict[str, Any] = {}
+
+
+def _load_inproc_ticket_cli(ws_root: Path) -> Optional[Any]:
+    """Load GewuTicket's ticket_cli module once in isolation without colliding with GewuAtlas's `guard`/`app_core` packages."""
+    if os.environ.get("GEWU_TICKET_FORCE_SUBPROCESS", "").strip() == "1":
+        return None
+    cli_path = (ws_root / "GewuTicket" / "scripts" / "ticket" / "ticket_cli.py").resolve()
+    if not cli_path.is_file():
+        return None
+    cache_key = str(cli_path)
+    if cache_key in _INPROC_TICKET_CLI_CACHE:
+        return _INPROC_TICKET_CLI_CACHE[cache_key]
+
+    tkt_scripts = str((ws_root / "GewuTicket" / "scripts").resolve())
+    saved_sys_path = list(sys.path)
+    saved_conflicts: Dict[str, Any] = {}
+    conflict_prefixes = ("guard", "app_core")
+    for mod_name in list(sys.modules.keys()):
+        if any(mod_name == p or mod_name.startswith(p + ".") for p in conflict_prefixes):
+            saved_conflicts[mod_name] = sys.modules.pop(mod_name)
+    try:
+        sys.path.insert(0, tkt_scripts)
+        spec = importlib.util.spec_from_file_location("_gewu_inproc_ticket_cli", str(cli_path))
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not callable(getattr(mod, "main", None)):
+            return None
+        _INPROC_TICKET_CLI_CACHE[cache_key] = mod
+        return mod
+    except Exception:
+        return None
+    finally:
+        # Remove GewuTicket's guard/app_core entries from sys.modules and restore GewuAtlas's own modules.
+        for mod_name in list(sys.modules.keys()):
+            if any(mod_name == p or mod_name.startswith(p + ".") for p in conflict_prefixes):
+                sys.modules.pop(mod_name, None)
+        sys.modules.update(saved_conflicts)
+        sys.path[:] = saved_sys_path
+
+
+def _run_gewu_ticket_inproc(ws_root: Path, argv: list[str]) -> Optional[tuple[int, Dict[str, Any], str]]:
+    with _INPROC_LOCK:
+        mod = _load_inproc_ticket_cli(ws_root)
+        if mod is None:
+            return None
+        prev_cwd = os.getcwd()
+        prev_rt = os.environ.get("GEWU_APP_RUNTIME_DIR")
+        buf = io.StringIO()
+        try:
+            # Never let GewuTicket write its breaker/logs into GewuAtlas's runtime dir.
+            if prev_rt and "GewuAtlas" in prev_rt:
+                os.environ.pop("GEWU_APP_RUNTIME_DIR", None)
+            os.chdir(str(ws_root))
+            with contextlib.redirect_stdout(buf):
+                try:
+                    rc = int(mod.main(list(argv)))
+                except SystemExit as se:
+                    rc = int(se.code) if isinstance(se.code, int) else 1
+        except Exception:
+            return None
+        finally:
+            try:
+                os.chdir(prev_cwd)
+            except OSError:
+                pass
+            if prev_rt is None:
+                os.environ.pop("GEWU_APP_RUNTIME_DIR", None)
+            else:
+                os.environ["GEWU_APP_RUNTIME_DIR"] = prev_rt
+        out = buf.getvalue().strip()
+        try:
+            parsed = json.loads(out) if out else {}
+        except Exception:
+            parsed = {"raw": out}
+        msg = str(parsed.get("code") or parsed.get("error_code") or f"exit={rc}")
+        return rc, parsed, msg
 
 
 def _run_gewu_ticket_once(ws_root: Path, argv: list[str]) -> tuple[int, Dict[str, Any], str]:
     gateway = ws_root / "gewu"
     if not gateway.is_file():
         raise VaultStoreError("E_NOT_FOUND", "工作区根缺少 ./gewu 网关脚本", exit_code=2)
+    inproc = _run_gewu_ticket_inproc(ws_root, argv)
+    if inproc is not None:
+        return inproc
+    sub_env = dict(os.environ)
+    if "GewuAtlas" in str(sub_env.get("GEWU_APP_RUNTIME_DIR", "")):
+        sub_env.pop("GEWU_APP_RUNTIME_DIR", None)
     proc = subprocess.run(
         [sys.executable, "-I", "-B", str(gateway), "ticket", *argv],
         cwd=str(ws_root),
+        env=sub_env,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

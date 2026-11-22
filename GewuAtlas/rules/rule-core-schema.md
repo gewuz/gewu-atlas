@@ -1,11 +1,11 @@
 ---
 doc_type: rule
 title: "元数据治理与 Schema 规范"
-summary: "双层正交 Frontmatter 模型、多源 provenance 一致性、署名审核规范与轻量日记约束"
+summary: "双层正交 Frontmatter 模型、单向溯源链路（sources/slices）、署名审核规范与轻量日记约束"
 status: active
 tags: [Rule, Schema, Metadata]
-updated: 2026-11-17
-version: "2.4.0"
+updated: 2026-11-22
+version: "2.5.0"
 ---
 
 # 元数据治理与 Schema 规范
@@ -27,11 +27,15 @@ version: "2.4.0"
    - 各 `doc_type` 仅允许使用字典登记的专属字段，严禁跨类型混用或自创未登记污染键；
    - 处于课题域（`30-Projects/<id>/`）内的知识生产链文档持有 `project_id` 字段，保障单卡脱离物理目录后仍具备自包含课题归属溯源。
 
-## 2. 多源证据（`provenance`）与派生字段一致性
+## 2. 单向溯源链路与零冗余约束
 
-- 原子卡支持从多篇文献、多个 `TOC` 骨架与多个切片中提炼证据，以 Obsidian 属性面板兼容的 `provenance` 字符串列表保存结构化分组关系（每条编码为 `"source=[[...]] | toc=[[...]] | slices=[[...]],[[...]]"`，省略空段；系统同时向后兼容解析历史对象列表）。
-- 顶层 `sources`、`toc`、`slices` 由 `provenance` 组内关系自动去重派生，顶层 `source` 保留首个主来源的兼容标量。
-- 归属校验严格核对切片的 `source_doc` / `map` 与 `TOC` 的 `source_doc`；分组关系与顶层派生字段不一致时由 Schema 巡检拦截。多源汇聚不改变原子卡「一事一卡」的单一命题粒度。
+- 五类核心文档（`library`、`slice`/`toc`、`atomic`、`moc`、`artifact`）采用**单向流动（DAG）链接模型**，严禁双向往复回写，反向关系由 Obsidian 反向链接与运行时索引实时计算：
+  - `library`（入库即只读原料）：不携带指向下游卡片的 `extracted_to`、`map` 或 `moc`；
+  - `slice` / `toc`：单向经 `source_doc` 指向所属 `library`，`toc` 不回写 `extracted_to`；
+  - `atomic`：**不在 YAML Frontmatter 中写入 `sources`、`slices`、`provenance`、`source`、`toc`、`moc`、`map`**，统一在正文最后一章 `## 参考来源与知识库索引` 采用**写法 A：列表式（兼顾 Obsidian 双链跳转 + 句柄留痕）**单向记录文献与切片双链及 `nte_XX` 句柄；
+  - `moc`：仅在正文单向收纳 `[[atomic]]` 等卡片，不回写原子卡 YAML；
+  - `artifact`：**不在 YAML Frontmatter 中写入 `sources`、`slices` 等溯源字段**，统一在正文最后一章 `## 参考来源与知识库索引` 采用**写法 A：列表式（兼顾 Obsidian 双链跳转 + 句柄留痕）**单向记录依据的课题总纲、一手文献、原子卡与 MOC。
+- **历史卡片宽容兼容**：存量老卡片中残留的 `sources`、`slices`、`provenance`、`source`、`toc`、`moc`、`map`、`extracted_to` 字段由读取与校验层宽容兼容，不再因历史派生不一致报错；新建与更新卡片统一采用上述极简末章双链溯源模型。多源汇聚仍不改变原子卡「一事一卡」的单一命题粒度。
 
 ## 3. 审核与署名字段真实性红线
 

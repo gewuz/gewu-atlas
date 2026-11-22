@@ -402,8 +402,6 @@ def process_md_file(filepath: Path, base_dir: Path, dry_run: bool = False, encod
         updated_meta["project_id"] = get_project_id_for_dir(base_dir)
     if "tags" not in updated_meta:
         updated_meta["tags"] = [source_type, channel.lower()]
-    if "extracted_to" not in updated_meta:
-        updated_meta["extracted_to"] = []
 
     final_content = serialize_frontmatter(updated_meta) + "\n\n" + body.lstrip()
     print(f"  [✓ 基础素材清洗落库] 识别为 {source_type} ({channel}) -> {dest_path.name}")
@@ -462,7 +460,6 @@ def process_txt_file(filepath: Path, base_dir: Path, archive_dir: Path, dry_run:
         "processed": False,
         "original_file": filepath.name,
         "source_file": "",
-        "extracted_to": []
     }
     if base_dir.parent.name == "30-Projects":
         meta["project_id"] = get_project_id_for_dir(base_dir)

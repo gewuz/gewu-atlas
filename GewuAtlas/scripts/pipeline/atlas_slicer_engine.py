@@ -20,7 +20,7 @@ from notes.atlas_note_engine import (
     _slugify_filename,
     _today,
 )
-from notes.atlas_yamlmini import extract_frontmatter, fm_scalar
+from notes.atlas_yamlmini import extract_frontmatter, fm_scalar, replace_frontmatter_field
 from notes.atlas_markdown_blocks import code_line_mask
 from pipeline.atlas_slice_planner import plan_adaptive, generate_compact_prefix, sanitize_filename
 from storage.note_kek_store import KekNoteRegistry, validate_note_rel_path
@@ -278,6 +278,14 @@ def note_slice_adaptive(
     _atomic_write_md(vault_dir / toc_rel, "\n".join(toc_lines))
     all_created = [*created_rels, toc_rel]
 
+    source_processed = False
+    src_dt = str(meta.get("doc_type") or "").strip().lower()
+    if has_fm and src_dt in ("library", "artifact"):
+        if meta.get("processed") is not True:
+            updated_src = replace_frontmatter_field(txt, "processed", "true")
+            _atomic_write_md(src_path, updated_src)
+        source_processed = True
+
     all_md = _scan_vault_markdowns(vault_dir)
     mapping = note_reg.sync_paths(vault_ref, all_md)
     slice_refs = [
@@ -287,6 +295,7 @@ def note_slice_adaptive(
     res: Dict[str, Any] = {
         "vault_ref": vault_ref,
         "source_note_ref": note_ref,
+        "source_processed": source_processed,
         "mode": "adaptive",
         "min_chars": min_chars,
         "max_chars": max_chars,

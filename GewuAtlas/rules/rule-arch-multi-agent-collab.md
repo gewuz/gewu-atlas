@@ -25,10 +25,11 @@ version: "2.4.0"
 1. **系统管理轨（`SYS` 轨）**：
    - 管辖 `GewuAtlas/` 程序目录（`AGENTS.md`、`rules/`、`skills/`、`scripts/`、`dicts/`、`references/`、`tests/`）；
    - 遵循「立项锁定起点与写范围 → 在途禁止零散微提交 → 实测通过后原子交付并结单」闭环。
-2. **知识内容轨（`DOC` 轨）**：
-   - 每个知识库在受保护运行态维护独立的专属内容 Git 仓库（自动忽略 `00-DropZone/`、`99-Assets/98-Archives/`、工作台 `source/` 与 `.trash/`）；
-   - 单次操作预计改动或同一 `DOC` 工单累计改写超过 `20` 个文件时，运行态自动在修改前执行 `pre` 快照提交、修改后执行 `post` 提交；
-   - 人类明确发出「提交 / 保存 / commit」指令且经体检无断链时，聚合提交当前内容变更。
+2. **知识内容轨（`DOC` 轨 · 统一本地版控与 GitHub 同步策略）**：
+   - 每个知识库在受保护运行态维护独立的专属内容 Git 仓库（`detached_git_dir`，若库内已有 `.git` 则自动复用）：**纳入追踪 `00-DropZone/` 与 `05-Journal/`**，统一排除 `.obsidian/`、`98-Archives/`（含 `99-Assets/98-Archives/`）、工作台 `source/`、`.trash/`、`.DS_Store`、`__pycache__/` 与 `*.tar(.gz)`；
+   - 单次操作预计改动或同一 `DOC` 工单累计改写超过 `20` 个文件时，运行态自动在修改前执行 `pre` 快照提交（仅本地护盘不推送）、修改后执行 `post` 提交；
+   - 人类明确发出「提交 / 保存 / commit」指令且经体检无断链时，聚合提交当前内容变更；
+   - **GitHub 远端合并同步**：支持通过 `doc-remote` 按 Vault 绑定远端仓库（默认分支 `main`、默认 `auto_push=true`，认证优先复用 `gh auth git-credential` 且严禁 URL 内嵌明文凭据）。开启 `auto_push` 后，`doc-commit` 成功后自动同步推送，若离线/未认证/分叉则保全本地提交并如实回报；显式双向/单向同步走 `doc-sync`（内置断链闸门、ff-only/无冲突 rebase、分叉或无关历史 fail-closed 拦截、严禁 `--force` 强推，拉入更新后自动刷新 KEK 笔记与课题索引）。
 
 ## 3. 人类手工修改与删除保护（状态 4 与状态 2 协同）
 

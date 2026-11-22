@@ -91,13 +91,15 @@ class TimedResult(unittest.TestResult):
 
 
 def _worker(tests_dir, test_ids=None):
+    eff_dir = tests_dir if tests_dir.is_dir() else (APP_DIR / "scripts" / "checks")
+    eff_pat = "test_*.py" if tests_dir.is_dir() else "atlas_*_selftest.py"
     sys.path.insert(0, str(APP_DIR / "scripts"))
-    sys.path.insert(0, str(tests_dir))
+    sys.path.insert(0, str(eff_dir))
     captured = io.StringIO()
     try:
         with redirect_stdout(captured), redirect_stderr(captured):
             loader = unittest.TestLoader()
-            suite = (loader.discover(str(tests_dir), pattern="test_*.py") if test_ids is None
+            suite = (loader.discover(str(eff_dir), pattern=eff_pat) if test_ids is None
                      else loader.loadTestsFromNames(test_ids))
             if loader.errors:
                 _diagnostic("domain_discovery", "\n".join(loader.errors))

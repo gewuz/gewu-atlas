@@ -437,7 +437,6 @@ def process_diagram(
         f'diagram_category: "{safe_category}"',
         f'diagram_format: "{canonical_ext.replace(".", "").lower()}"',
         f'tags: [image, diagram, {category.lower()}]',
-        'extracted_to: []',
         "---",
         ""
     ]
@@ -771,7 +770,6 @@ def compile_session_annotation(session_file: str, decision: str = "companion", c
             f"status: {status_val}",
             f"updated: {datetime.now().strftime('%Y-%m-%d')}",
             "tags: [image, diagram, companion]",
-            "extracted_to: []",
             "---",
             "",
             f"# {c_slug} 视觉架构深度拆解\n",

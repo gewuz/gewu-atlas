@@ -98,6 +98,11 @@ command_groups:
         mode: "read"
         slots: ["--ref", "--project_ref"]
         summary: "读取课题 Manifest 详情与各分区卡片统计"
+      - name: "project-brief"
+        mode: "read"
+        surface: "core"
+        slots: ["--ref", "[--project_ref]", "[--include_slices]", "[--max_notes]"]
+        summary: "一屏返回课题或全库分区统计、核心卡片句柄目录与双链拓扑骨架（合并多步探查）"
       - name: "project-rename"
         mode: "write"
         slots: ["--ref", "--project_ref", "[--title]", "[--new_project_id]", "[--by]"]
@@ -217,12 +222,27 @@ command_groups:
       - name: "note-get"
         mode: "read"
         surface: "core"
-        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--raw]", "[--start_line]", "[--end_line]", "[--head]", "[--tail]"]
-        summary: "读取单张或批量卡片（--note_refs）完整正文、YAML 元数据、content_sha256 及按行区间/head/tail 截取（日志推荐 --tail 40）"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--outline]", "[--section]", "[--raw]", "[--start_line]", "[--end_line]", "[--head]", "[--tail]"]
+        summary: "读取单张或批量卡片（--note_refs）完整正文、仅大纲行号（--outline true）、按章节（--section）或按行区间/head/tail 截取"
+      - name: "note-grep"
+        mode: "read"
+        surface: "core"
+        slots: ["--ref", "--pattern", "[--regex]", "[--case_sensitive]", "[--with_section]", "[--zone]", "[--project_ref]", "[--doc_type]", "[--context_lines]", "[--max_matches]", "[--include_workbench]", "[--private]", "[--include_archived]"]
+        summary: "跨卡受控字面/正则精准检索，返回不透明句柄与行号上下文（加 --with_section true 可直接带回所属章节，零物理路径）"
       - name: "note-update"
         mode: "write"
         slots: ["--ref", "--note_ref", "[--title]", "[--summary]", "[--tags]", "[--status]", "[--content]", "[--by]"]
         summary: "原子更新卡片元数据或正文"
+      - name: "note-patch"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--note_ref]", "[--note_refs]", "[--old_text]", "[--new_text]", "[--replace_all]", "[--section]", "[--mode]", "[--content]", "[--ops_json]", "[--allow_managed_block]", "[--expected_sha256]", "[--dry_run]", "[--by]"]
+        summary: "局部增量编辑单卡或跨多卡（--note_refs，支持 --dry_run 预演；唯一替换/按章节替换/首尾追加/原子多段补丁），自动保护受控块、21-Library 原文只读与日记人类区"
+      - name: "batch"
+        mode: "write"
+        surface: "core"
+        slots: ["--ref", "[--project_ref]", "[--steps]", "[--batch_json]", "[--on_error]", "[--by]"]
+        summary: "事务批处理算子：单次加锁顺序执行白名单多步算子，支持 $step_id.field 前序句柄串联，合并 DOC 票/快照与末尾验货"
       - name: "note-promote"
         mode: "write"
         slots: ["--ref", "--note_ref", "[--target_zone]", "[--scope]", "[--on_conflict]", "[--target_note_ref]", "[--by]"]
@@ -315,8 +335,8 @@ command_groups:
       - name: "guard"
         mode: "read"
         surface: "ops"
-        slots: ["[--ref]", "[--mode]", "[--note_ref]", "[--doc_type]", "[--change_id]", "[--strict]", "[--apply]", "[--force]", "[--days]", "[--dry_run]", "[--reason]"]
-        summary: "统一运维体检入口（--mode health|schema|schema-list|validate|links|doc-status|doc-commit|clean-attachments|archive-list|archive-pack|trash-purge|retention-sweep|change-list|change-get|undo）"
+        slots: ["[--ref]", "[--mode]", "[--note_ref]", "[--doc_type]", "[--change_id]", "[--strict]", "[--apply]", "[--force]", "[--days]", "[--dry_run]", "[--reason]", "[--remote_url]", "[--branch]", "[--auto_push]", "[--push]", "[--direction]", "[--fetch]", "[--clear]", "[--bootstrap]", "[--git_layout]"]
+        summary: "统一运维体检入口（--mode health|schema|schema-list|validate|links|doc-status|doc-commit|doc-remote|doc-sync|clean-attachments|archive-list|archive-pack|trash-purge|retention-sweep|change-list|change-get|undo）"
       - name: "schema-list"
         mode: "read"
         slots: ["[--doc_type]"]
@@ -355,12 +375,20 @@ command_groups:
         summary: "在快照完整且无人类后续修改冲突时撤回受控变更"
       - name: "doc-status"
         mode: "read"
-        slots: ["--ref"]
-        summary: "识别 DOC Git 未提交的人类手工增删改与断链状态"
+        slots: ["--ref", "[--fetch]"]
+        summary: "识别 DOC Git 未提交的人类手工增删改、断链状态与 GitHub 远端领先/落后状态"
       - name: "doc-commit"
         mode: "write"
-        slots: ["--ref", "[--mode]", "[--force]", "[--reason]"]
-        summary: "提交 DOC 轨变更（支持 standard 与 human-sync 收口）"
+        slots: ["--ref", "[--mode]", "[--force]", "[--reason]", "[--push]"]
+        summary: "提交 DOC 轨变更（支持 standard 与 human-sync 收口；绑定远端且 auto_push=true 时自动推送）"
+      - name: "doc-remote"
+        mode: "write"
+        slots: ["--ref", "[--remote_url]", "[--branch]", "[--auto_push]", "[--git_layout]", "[--fetch]", "[--clear]"]
+        summary: "查询、绑定或解绑 Vault 独立 DOC Git 的 GitHub/Git 远端、auto_push 策略与仓库布局（in-vault 兼容 Obsidian Git 插件 / detached）"
+      - name: "doc-sync"
+        mode: "write"
+        slots: ["--ref", "[--direction]", "[--bootstrap]", "[--force]", "[--reason]"]
+        summary: "执行 DOC 轨与远端仓库双向/单向同步（含断链闸门、无冲突合并与索引自动刷新，禁 force push）"
       - name: "trash-purge"
         mode: "write"
         slots: ["--ref", "[--days]", "[--dry_run]"]

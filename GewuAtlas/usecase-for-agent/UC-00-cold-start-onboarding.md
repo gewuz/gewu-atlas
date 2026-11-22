@@ -4,7 +4,7 @@ uc_id: "UC-00-cold-start-onboarding"
 title: "格物志冷启动新手引导与常见玩法速查路书"
 scenarios: "第一次冷启动、探索格物志能做什么、询问下一步做什么、13个高频场景提示词与精确指令速查"
 tags: ["Onboarding", "ColdStart", "QuickStart", "Prompts", "Commands", "Discovery"]
-updated: "2026-11-20"
+updated: "2026-11-22"
 updated_by: "researcher"
 ---
 
@@ -33,6 +33,7 @@ updated_by: "researcher"
 | 11 | **独立课题深度研究** | 「开一个独立课题深度调研『RAG 评测体系』，交付 3 篇专题报告」 | 建工作台隔离创作、盲审打分、采收并经确认定稿 | `./gewu atlas --action project-create --ref vlt_01 --title "<课题名>" --agent researcher` → `note-create` → `artifact-adopt` → `artifact-finalize` |
 | 12 | **断链修复与体检** | 「帮我全面体检一下知识库，顺便把悬空双链修好」 | 扫描图谱孤岛、Schema 合规与断链并一键修复 | `./gewu atlas --action guard --ref vlt_01 --mode health`（修链用 `note-link --mode fix`，图谱用 `graph-report`） |
 | 13 | **软删回收与后悔药** | 「刚才那张卡删错了 / 改乱了，帮我撤回到上一步」 | 回收站可逆恢复，或按 `chg_XX` 快照无损回滚改写 | `./gewu atlas --action trash --ref vlt_01 --mode restore --trash_ref <trs_XX>`（撤改用 `undo --change_id <chg_XX>`） |
+| 14 | **热内核提速与局部/批量精修** | 「开热内核快速改一下报告结论段，再把这几张草稿批量整理好」 | 免宿主 MCP 配置内存热加速 + 局部补丁防覆盖 + 多步事务合批 + 一屏全景 | `./gewu atlas daemon start` → `project-brief` / `note-grep` / `note-patch` / `batch` → `./gewu atlas daemon stop` |
 
 ## 3. 黄金体验路径与「下一步做什么」引导配方
 

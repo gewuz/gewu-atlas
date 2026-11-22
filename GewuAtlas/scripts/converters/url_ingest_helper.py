@@ -63,6 +63,40 @@ def extract_url_list(text: str) -> Optional[List[str]]:
 
 
 _PUBLIC_DNS_CACHE: Dict[str, Tuple[float, List[ipaddress._BaseAddress]]] = {}
+MAX_URL_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB hard cap per ingested file
+
+
+def _verify_connected_peer_ip(root: Path, response: object) -> None:
+    """Inspect connected socket peer IP (if available) to defeat DNS Rebinding to private/loopback addresses."""
+    sock_obj = None
+    for chain in (("fp", "raw", "_sock"), ("fp", "_sock"), ("_sock",)):
+        cur = response
+        for attr in chain:
+            cur = getattr(cur, attr, None)
+            if cur is None:
+                break
+        if cur is not None and hasattr(cur, "getpeername"):
+            sock_obj = cur
+            break
+    if sock_obj is None:
+        return
+    try:
+        peer = sock_obj.getpeername()
+    except Exception:
+        return
+    if not isinstance(peer, tuple) or not peer or not isinstance(peer[0], str):
+        return
+    try:
+        addr = ipaddress.ip_address(peer[0])
+    except ValueError:
+        return
+    fixture = _is_test_fixture_root(root)
+    if fixture and addr.is_loopback:
+        return
+    if addr.version == 4 and addr in ipaddress.ip_network("198.18.0.0/15"):
+        return
+    if not addr.is_global:
+        raise ValueError("检测到 DNS Rebinding 私网/环回连接，已阻断")
 
 
 def public_dns_addresses(host: str):
@@ -74,7 +108,7 @@ def public_dns_addresses(host: str):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             raise ValueError("公共DNS核验不接受重定向")
 
-    opener = urllib.request.build_opener(NoRedirect())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     addresses = []
     ttl = 60
     for kind in ("A", "AAAA"):
@@ -176,7 +210,7 @@ def download_url(root: Path, url: str, stage: Path, library: Optional[Path] = No
             check_url(root, newurl)
             return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
 
-    opener = urllib.request.build_opener(SafeRedirect())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SafeRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; Gewu-URL-Ingest/2)"})
     response = None
     for attempt in range(3):
@@ -192,6 +226,13 @@ def download_url(root: Path, url: str, stage: Path, library: Optional[Path] = No
     assert response is not None
     with response:
         check_url(root, response.geturl())
+        _verify_connected_peer_ip(root, response)
+        expected = response.headers.get("Content-Length")
+        if expected is not None:
+            if not expected.strip().isdigit():
+                raise ValueError("HTTP Content-Length 无效")
+            if int(expected) > MAX_URL_DOWNLOAD_BYTES:
+                raise ValueError("下载内容超过最大体积上限")
         # HTTP names and MIME are hints; PDF signatures take precedence over either.
         first = response.read(65536)
         is_pdf = first.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"%PDF-")
@@ -236,19 +277,23 @@ def download_url(root: Path, url: str, stage: Path, library: Optional[Path] = No
         path = stage / (chosen + suffix)
         if path.is_symlink():
             raise ValueError("下载临时文件不能为软链")
+        total_written = len(first)
+        if total_written > MAX_URL_DOWNLOAD_BYTES:
+            raise ValueError("下载内容超过最大体积上限")
         with path.open("wb") as handle:
             handle.write(first)
             while True:
                 data = response.read(65536)
                 if not data:
                     break
+                total_written += len(data)
+                if total_written > MAX_URL_DOWNLOAD_BYTES:
+                    handle.close()
+                    path.unlink(missing_ok=True)
+                    raise ValueError("下载内容超过最大体积上限")
                 handle.write(data)
         if not path.stat().st_size:
             raise ValueError("下载内容为空")
-        expected = response.headers.get("Content-Length")
-        if expected is not None:
-            if not expected.strip().isdigit():
-                raise ValueError("HTTP Content-Length 无效")
-            if path.stat().st_size != int(expected):
-                raise ValueError("下载不完整，内容长度与HTTP声明不一致")
+        if expected is not None and path.stat().st_size != int(expected):
+            raise ValueError("下载不完整，内容长度与HTTP声明不一致")
         return path

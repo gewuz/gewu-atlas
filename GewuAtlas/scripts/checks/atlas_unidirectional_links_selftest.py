@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""End-to-end selftest for unidirectional (DAG) link schema & zero-writeback invariants."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any, Dict, List
+
+APP_DIR = Path(__file__).resolve().parents[2]
+CLI_SCRIPT = APP_DIR / "scripts" / "facade" / "atlas_cli.py"
+SCRIPTS_DIR = APP_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from notes.atlas_yamlmini import extract_frontmatter, inspect_note_against_dict  # noqa: E402
+
+
+def _run_cli(ws_root: Path, runtime_dir: Path, argv: List[str]) -> tuple[int, Dict[str, Any], str]:
+    env = dict(os.environ)
+    env["GEWU_ATLAS_WORKSPACE_ROOT"] = str(ws_root)
+    env["GEWU_APP_RUNTIME_DIR"] = str(runtime_dir)
+    env["GEWU_ATLAS_SESSION_ID"] = "selftest-unidir-links"
+    proc = subprocess.run(
+        [sys.executable, "-I", "-B", str(CLI_SCRIPT), *argv],
+        cwd=str(ws_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    parsed = json.loads(proc.stdout)
+    return proc.returncode, parsed, proc.stdout
+
+
+class TestUnidirectionalLinkSchema(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.ws_root = self.root / "ws"
+        self.runtime_dir = self.root / "runtime"
+        self.ws_root.mkdir(parents=True)
+        self.runtime_dir.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _vault_dir(self) -> Path:
+        data_root = self.ws_root / "Volumes" / "GewuAtlas-data"
+        dirs = [p for p in data_root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        self.assertEqual(len(dirs), 1)
+        return dirs[0]
+
+    def test_unidirectional_extract_moc_sync_and_base_view(self) -> None:
+        rc, env, raw = _run_cli(self.ws_root, self.runtime_dir, ["--action", "vault-create", "--title", "UniDirTest"])
+        self.assertEqual(rc, 0, raw)
+        vref = env["data"]["ref"]
+        vdir = self._vault_dir()
+
+        # 1. Verify .base view omits frontmatter `sources` / `source` on atomics (provenance lives in final chapter)
+        atomics_base = (vdir / "10-Index" / "01-Atomics-常青原子卡.base").read_text(encoding="utf-8")
+        self.assertNotIn("- sources\n", atomics_base)
+        self.assertNotIn("- source\n", atomics_base)
+
+        # 2. Create a library note
+        rc_lib, env_lib, raw_lib = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            [
+                "--action", "note-create",
+                "--ref", vref,
+                "--zone", "library",
+                "--doc_type", "library",
+                "--title", "单向图谱原则文献",
+                "--summary", "论证知识图谱单向引用优于双向手写回写",
+                "--tags", "Graph,Architecture",
+                "--content", "# 单向图谱原则文献\n\n下游引用上游，反向由索引实时计算。\n",
+            ],
+        )
+        self.assertEqual(rc_lib, 0, raw_lib)
+        lib_ref = env_lib["data"]["note_ref"]
+        lib_files = list((vdir / "20-AI-Zone" / "20-Memory" / "21-Library").glob("*.md"))
+        self.assertEqual(len(lib_files), 1)
+        lib_path = lib_files[0]
+        lib_meta_before, _, _ = extract_frontmatter(lib_path.read_text(encoding="utf-8"))
+        self.assertNotIn("extracted_to", lib_meta_before)
+        lib_sha_before = hashlib.sha256(lib_path.read_bytes()).hexdigest()
+
+        # 3. Extract atomic card from library note
+        rc_ext, env_ext, raw_ext = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            [
+                "--action", "atomic-extract",
+                "--ref", vref,
+                "--note_ref", lib_ref,
+                "--epistemic_type", "SYN",
+                "--title", "知识图谱单向流动可消除回写冲突",
+                "--summary", "下游单向引用上游原料，反向关系交由索引动态反查",
+                "--tags", "Graph,DAG",
+                "--content", "## 核心断言\n\n下游单向引用上游即可满足溯源，无需回改原文。\n",
+            ],
+        )
+        self.assertEqual(rc_ext, 0, raw_ext)
+        atom_files = list((vdir / "20-AI-Zone" / "20-Memory" / "22-Atomics").glob("*.md"))
+        self.assertEqual(len(atom_files), 1)
+        atom_path = atom_files[0]
+        atom_raw = atom_path.read_text(encoding="utf-8")
+        atom_meta, atom_body, _ = extract_frontmatter(atom_raw)
+
+        # Atomic must omit `sources` and `slices` from Frontmatter and instead render final chapter '## 参考来源与知识库索引' (Format A)
+        for forbidden in ("sources", "slices", "provenance", "source", "toc", "moc", "map"):
+            self.assertNotIn(forbidden, atom_meta)
+        self.assertIn("## 参考来源与知识库索引", atom_body)
+        self.assertIn("[[单向图谱原则文献]]", atom_body)
+        self.assertIn(f"`{lib_ref}`", atom_body)
+
+        # Library must remain byte-for-byte untouched (zero writeback of extracted_to)
+        self.assertEqual(hashlib.sha256(lib_path.read_bytes()).hexdigest(), lib_sha_before)
+
+        # 4. Dynamic backref discovery must still report extracted_count == 1 & in_progress
+        rc_disc, env_disc, raw_disc = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "atomic-extract", "--ref", vref, "--mode", "unextracted"],
+        )
+        self.assertEqual(rc_disc, 0, raw_disc)
+        lib_item = next(it for it in env_disc["data"]["items"] if it["note_ref"] == lib_ref)
+        self.assertEqual(lib_item["extracted_count"], 1)
+        self.assertEqual(lib_item["extraction_state"], "in_progress")
+
+        # 5. moc-sync must write ONLY the MOC file and NOT mutate atomic card with `map`
+        atom_sha_before_moc = hashlib.sha256(atom_path.read_bytes()).hexdigest()
+        rc_moc, env_moc, raw_moc = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "moc-sync", "--ref", vref, "--title", "MOC-单向图谱"],
+        )
+        self.assertEqual(rc_moc, 0, raw_moc)
+        self.assertEqual(env_moc["data"]["written_file_count"], 1)
+        self.assertEqual(env_moc["data"]["map_added_count"], 0)
+        self.assertEqual(hashlib.sha256(atom_path.read_bytes()).hexdigest(), atom_sha_before_moc)
+        atom_meta_after_moc, _, _ = extract_frontmatter(atom_path.read_text(encoding="utf-8"))
+        self.assertNotIn("map", atom_meta_after_moc)
+
+        # 6. moc-sync --mode roam must dynamically recognize the atomic is already linked by MOC body
+        rc_roam, env_roam, raw_roam = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "moc-sync", "--ref", vref, "--mode", "roam"],
+        )
+        self.assertEqual(rc_roam, 0, raw_roam)
+        self.assertEqual(env_roam["data"]["unmapped_atomic_count"], 0)
+
+        # 7. Create artifact note: only `sources`, no `extracted_to` or redundant keys
+        rc_art, env_art, raw_art = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            [
+                "--action", "note-create",
+                "--ref", vref,
+                "--zone", "artifacts",
+                "--doc_type", "artifact",
+                "--title", "单向图谱架构交付报告",
+                "--summary", "交付单向链接模型架构方案",
+                "--tags", "Artifact,DAG",
+                "--content", (
+                    "# 交付报告\n\n"
+                    "## 1. 核心架构方案\n\n"
+                    "下游单向引用上游原料可彻底消除回写冲突。\n\n"
+                    "## 参考来源与知识库索引\n\n"
+                    f"- **一手文献与切片来源**：\n  - [[{lib_ref}|单向图谱原则文献]]（`{lib_ref}`，回写冲突消解依据）\n"
+                ),
+            ],
+        )
+        self.assertEqual(rc_art, 0, raw_art)
+        art_files = list((vdir / "20-AI-Zone" / "10-Artifacts").glob("*.md"))
+        self.assertEqual(len(art_files), 1)
+        art_meta, _, _ = extract_frontmatter(art_files[0].read_text(encoding="utf-8"))
+        for forbidden in ("sources", "extracted_to", "provenance", "source", "toc", "slices", "map", "moc"):
+            self.assertNotIn(forbidden, art_meta)
+
+        # 7b. note-search passage mode strips trailing reference chapter from atomic passage & prioritizes artifact prose section
+        rc_sp, env_sp, raw_sp = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "note-search", "--ref", vref, "--query", "单向引用 回写冲突"],
+        )
+        self.assertEqual(rc_sp, 0, raw_sp)
+        hits_by_type = {h["doc_type"]: h for h in env_sp["data"]["hits"]}
+        self.assertNotIn("## 参考来源与知识库索引", hits_by_type["atomic"]["passage"])
+        self.assertEqual(hits_by_type["artifact"]["section"], "1. 核心架构方案")
+
+        rc_sd, env_sd, raw_sd = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "note-search", "--ref", vref, "--mode", "deep", "--query", "单向引用 回写冲突"],
+        )
+        self.assertEqual(rc_sd, 0, raw_sd)
+        deep_atom = next(h for h in env_sd["data"]["hits"] if h["doc_type"] == "atomic")
+        self.assertTrue(any(x["note_ref"] == lib_ref for x in deep_atom["out_links_top3"]))
+
+        # 8. note-update --set_meta with null drops legacy keys cleanly & index-sync --force works
+        lib_path.write_text(
+            lib_path.read_text(encoding="utf-8").replace("\n---\n", '\nextracted_to: ["[[OldCard]]"]\n---\n', 1),
+            encoding="utf-8",
+        )
+        rc_drop, env_drop, raw_drop = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "note-update", "--ref", vref, "--note_ref", lib_ref, "--set_meta", '{"extracted_to": null}'],
+        )
+        self.assertEqual(rc_drop, 0, raw_drop)
+        lib_meta_after_drop, _, _ = extract_frontmatter(lib_path.read_text(encoding="utf-8"))
+        self.assertNotIn("extracted_to", lib_meta_after_drop)
+
+        rc_idx, env_idx, raw_idx = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "index-sync", "--ref", vref, "--force", "true"],
+        )
+        self.assertEqual(rc_idx, 0, raw_idx)
+        self.assertTrue(env_idx["data"]["overwrote_existing"])
+        tpl_dir = vdir / "90-System" / "01-Templates"
+        for tpl_name in (
+            "01-Atomic-原子知识卡.md",
+            "02-Artifact-成果研究报告.md",
+            "03-MOC-主题内容地图.md",
+            "04-Library-客观文献卷宗.md",
+            "05-Manifest-课题立项总纲.md",
+            "06-Journal-每日格物日记.md",
+            "07-Slip-书签批注卡.md",
+            "08-Workbench-工作台草稿.md",
+            "README.md",
+        ):
+            self.assertTrue((tpl_dir / tpl_name).is_file(), f"missing template: {tpl_name}")
+        atom_tpl = (tpl_dir / "01-Atomic-原子知识卡.md").read_text(encoding="utf-8")
+        art_tpl = (tpl_dir / "02-Artifact-成果研究报告.md").read_text(encoding="utf-8")
+        self.assertNotIn("sources:", atom_tpl)
+        self.assertNotIn("slices:", atom_tpl)
+        self.assertNotIn("sources:", art_tpl)
+        self.assertIn("## 参考来源与知识库索引", atom_tpl)
+        self.assertIn("## 参考来源与知识库索引", art_tpl)
+        j_meta, _, _ = extract_frontmatter((tpl_dir / "06-Journal-每日格物日记.md").read_text(encoding="utf-8"))
+        w_meta, _, _ = extract_frontmatter((tpl_dir / "08-Workbench-工作台草稿.md").read_text(encoding="utf-8"))
+        self.assertEqual(set(j_meta.keys()), {"doc_type", "tags"})
+        self.assertEqual(set(w_meta.keys()), {"doc_type", "tags"})
+
+        # 9. note-slice automatically marks source library `processed: true` and hands off to TOC
+        rc_sl, env_sl, raw_sl = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "note-slice", "--ref", vref, "--note_ref", lib_ref, "--adaptive", "true"],
+        )
+        self.assertEqual(rc_sl, 0, raw_sl)
+        self.assertTrue(env_sl["data"]["source_processed"])
+        lib_meta_sliced, _, _ = extract_frontmatter(lib_path.read_text(encoding="utf-8"))
+        self.assertIs(lib_meta_sliced.get("processed"), True)
+
+        rc_disc2, env_disc2, raw_disc2 = _run_cli(
+            self.ws_root,
+            self.runtime_dir,
+            ["--action", "atomic-extract", "--ref", vref, "--mode", "unextracted"],
+        )
+        self.assertEqual(rc_disc2, 0, raw_disc2)
+        unext_refs = [it["note_ref"] for it in env_disc2["data"]["items"]]
+        self.assertNotIn(lib_ref, unext_refs)
+        self.assertIn(env_sl["data"]["toc_note_ref"], unext_refs)
+
+        # 10. Schema check passes with 0 errors
+        rc_sc, env_sc, raw_sc = _run_cli(self.ws_root, self.runtime_dir, ["--action", "schema-check", "--ref", vref])
+        self.assertEqual(rc_sc, 0, raw_sc)
+        self.assertEqual(env_sc["data"]["schema_issue_count"], 0)
+        self.assertEqual(env_sc["data"]["unknown_field_issue_count"], 0)
+        self.assertTrue(env_sc["data"]["clean"])
+
+    def test_legacy_cards_with_deprecated_provenance_keys_remain_compatible(self) -> None:
+        legacy_atomic = {
+            "doc_type": "atomic",
+            "title": "旧版原子卡",
+            "summary": "包含历史 provenance、source、toc、map 字段",
+            "status": "active",
+            "tags": ["Legacy"],
+            "updated": "2026-11-10",
+            "source": "[[旧文献A]]",
+            "sources": ["[[旧文献A]]", "[[手工追加B]]"],
+            "toc": ["[[TOC-旧文献A]]"],
+            "provenance": ["source=[[旧文献A]] | toc=[[TOC-旧文献A]]"],
+            "map": ["[[MOC-旧主题]]"],
+            "moc": ["[[MOC-旧主题]]"],
+        }
+        res_a = inspect_note_against_dict(legacy_atomic, rel_path="20-AI-Zone/20-Memory/22-Atomics/legacy.md")
+        self.assertEqual(res_a["errors"], [])
+        self.assertEqual(res_a["unknown_fields"], [])
+
+        legacy_lib = {
+            "doc_type": "library",
+            "title": "旧版文献卡",
+            "summary": "包含历史 extracted_to 与 map 字段",
+            "status": "active",
+            "tags": ["Legacy"],
+            "updated": "2026-11-10",
+            "extracted_to": ["[[旧版原子卡]]"],
+            "map": ["[[MOC-旧主题]]"],
+        }
+        res_l = inspect_note_against_dict(legacy_lib, rel_path="20-AI-Zone/20-Memory/21-Library/legacy.md")
+        self.assertEqual(res_l["errors"], [])
+        self.assertEqual(res_l["unknown_fields"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

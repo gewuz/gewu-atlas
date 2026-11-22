@@ -27,7 +27,7 @@ def _strip_comment(line: str) -> str:
             in_s = not in_s
         elif ch == '"' and not in_s:
             in_d = not in_d
-        elif ch == "#" and not in_s and not in_d:
+        elif ch == "#" and not in_s and not in_d and (i == 0 or line[i - 1] in (" ", "\t")):
             return line[:i].rstrip()
     return line.rstrip()
 
@@ -111,9 +111,9 @@ def _parse_scalar(s: str) -> Any:
             res[k] = _parse_scalar(v) if v != "" else None
         return res
     low = s.lower()
-    if low in ("true", "yes", "on"):
+    if low == "true":
         return True
-    if low in ("false", "no", "off"):
+    if low == "false":
         return False
     if low in ("null", "~"):
         return None
@@ -212,8 +212,19 @@ def _seq(lines: List[Tuple[int, str]], idx: int, indent: int) -> Tuple[List[Any]
                 idx += 1
             while idx < n and lines[idx][0] == key_indent and not (lines[idx][1] == "-" or lines[idx][1].startswith("- ")):
                 ck, cv = _split_kv(lines[idx][1])
-                item[ck] = _parse_scalar(cv) if cv != "" else None
-                idx += 1
+                if cv == "":
+                    if idx + 1 < n and (
+                        lines[idx + 1][0] > key_indent
+                        or (lines[idx + 1][0] == key_indent and (lines[idx + 1][1] == "-" or lines[idx + 1][1].startswith("- ")))
+                    ):
+                        child, idx = _parse(lines, idx + 1, lines[idx + 1][0])
+                        item[ck] = child
+                    else:
+                        item[ck] = None
+                        idx += 1
+                else:
+                    item[ck] = _parse_scalar(cv)
+                    idx += 1
             arr.append(item)
         else:
             arr.append(_parse_scalar(rest))
@@ -462,7 +473,7 @@ def normalize_provenance_refs(value: Any) -> List[str]:
         item = item.split("|")[0].split("#")[0].strip()
         if item.endswith(".md"):
             item = item[:-3]
-        if not item or any(c in item for c in ('"', "'", "\\", "\n", "\r")):
+        if not item or any(c in item for c in ('"', "\\", "\n", "\r", "\x00")):
             raise ValueError("非法证据引用: " + item)
         link = f"[[{item}]]"
         if link not in out:
@@ -560,41 +571,55 @@ def derive_provenance_fields(groups: Any) -> Dict[str, Any]:
     return res
 
 
+_LEGACY_LINK_COMPAT_SPECS: Dict[str, Dict[str, Dict[str, str]]] = {
+    "atomic": {
+        "sources": {"type": "list[string]"},
+        "slices": {"type": "list[string]"},
+        "source": {"type": "string"},
+        "toc": {"type": "list[string]"},
+        "provenance": {"type": "list[string]"},
+        "map": {"type": "list[string]"},
+        "moc": {"type": "list[string]"},
+    },
+    "artifact": {
+        "sources": {"type": "list[string]"},
+        "source": {"type": "string"},
+        "toc": {"type": "list[string]"},
+        "slices": {"type": "list[string]"},
+        "provenance": {"type": "list[string]"},
+        "map": {"type": "list[string]"},
+        "moc": {"type": "list[string]"},
+        "extracted_to": {"type": "list[string]"},
+    },
+    "library": {
+        "map": {"type": "list[string]"},
+        "moc": {"type": "list[string]"},
+        "extracted_to": {"type": "list[string]"},
+    },
+    "toc": {
+        "extracted_to": {"type": "list[string]"},
+    },
+}
+
+
 def apply_provenance_frontmatter(text: str, groups: Any) -> str:
-    fields = derive_provenance_fields(groups)
+    """Validate provenance groups and strip legacy/frontmatter provenance keys (`sources`, `slices`, etc.) from atomic cards."""
+    _ = derive_provenance_fields(groups)
     out = text
-    for key, value in fields.items():
-        if key == "provenance":
-            raw = "\n" + "\n".join(
-                f"  - {json.dumps(format_provenance_group_str(g), ensure_ascii=False)}"
-                for g in value
-            )
-        else:
-            raw = json.dumps(value, ensure_ascii=False)
-        out = replace_frontmatter_field(out, key, raw)
+    for legacy_key in ("sources", "slices", "source", "toc", "provenance", "moc", "map"):
+        out = drop_frontmatter_field(out, legacy_key)
     return out
 
 
 def validate_provenance_meta(meta: Dict[str, Any]) -> List[str]:
+    """Validate link-field value types while staying lenient toward legacy cards containing deprecated provenance keys."""
     errors: List[str] = []
     for key in ("sources", "toc", "slices"):
         if key in meta and meta[key] is not None:
             if not isinstance(meta[key], list) or any(not isinstance(x, str) for x in meta[key]):
                 errors.append(f"{key} 必须为字符串列表")
     if "source" in meta and meta["source"] is not None and not isinstance(meta["source"], str):
-        errors.append("source 必须为兼容单值字符串，多源请使用 provenance")
-    if "provenance" in meta and meta["provenance"] is not None:
-        try:
-            fields = derive_provenance_fields(meta["provenance"])
-            if not fields["provenance"]:
-                raise ValueError("provenance 不能是空证据组")
-            for key in ("source", "sources", "toc", "slices"):
-                if key not in meta:
-                    raise ValueError(f"provenance 缺少派生字段 {key}")
-                if normalize_provenance_refs(meta[key]) != normalize_provenance_refs(fields[key]):
-                    raise ValueError(f"{key} 与 provenance 派生结果不一致")
-        except ValueError as exc:
-            errors.append(str(exc))
+        errors.append("source 必须为字符串")
     return errors
 
 
@@ -688,6 +713,7 @@ def inspect_note_against_dict(meta: Dict[str, Any], rel_path: Optional[str] = No
         req_props = schema_def.get("required_properties") or {}
         opt_props = schema_def.get("optional_properties") or {}
         all_specs: Dict[str, Any] = {}
+        all_specs.update(_LEGACY_LINK_COMPAT_SPECS.get(schema_key, {}))
         all_specs.update(opt_props)
         all_specs.update(req_props)
 

@@ -14,6 +14,7 @@ Architecture:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -40,8 +41,8 @@ from storage.vault_kek_store import (
     hkdf_sha256,
 )
 
-_INDEX_MAGIC = b"GWNI2"
-_INDEX_VERSION = 2
+_INDEX_MAGIC = b"GWNI3"
+_INDEX_VERSION = 3
 _NONCE_LEN = 24
 _TAG_LEN = 16
 
@@ -49,15 +50,81 @@ _WIKILINK_RE = re.compile(r"(!?)\[\[([^\]]+)\]\]")
 _REF_FIELDS = ("source", "sources", "toc", "slices", "supersedes", "superseded_by", "source_file", "extracted_to")
 _REMOTE_URI_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|mailto:|tel:|urn:|data:|javascript:|obsidian:)", re.I)
 
+# Opt-in process RAM hot-cache (enabled ONLY by AtlasHotKernel; disabled in cold CLI/tests).
+# Keyed by resolved cache_file path -> (mtime_ns, size, key_digest, entries_dict).
+_HOT_CACHE_ENABLED = False
+_HOT_CACHE_MAX_ENTRIES = 8
+_HOT_INDEX_CACHE: Dict[str, Tuple[int, int, bytes, Dict[str, Dict[str, Any]]]] = {}
+_HOT_CACHE_HITS = 0
+_HOT_CACHE_MISSES = 0
+
+
+def set_hot_cache_enabled(enabled: bool, *, max_entries: int = 8) -> None:
+    global _HOT_CACHE_ENABLED, _HOT_CACHE_MAX_ENTRIES
+    _HOT_CACHE_ENABLED = bool(enabled)
+    _HOT_CACHE_MAX_ENTRIES = max(1, int(max_entries))
+    if not _HOT_CACHE_ENABLED:
+        clear_hot_cache()
+
+
+def clear_hot_cache() -> None:
+    global _HOT_CACHE_HITS, _HOT_CACHE_MISSES
+    _HOT_INDEX_CACHE.clear()
+    _HOT_CACHE_HITS = 0
+    _HOT_CACHE_MISSES = 0
+
+
+def get_hot_cache_stats() -> Dict[str, Any]:
+    return {
+        "enabled": _HOT_CACHE_ENABLED,
+        "cached_vaults": len(_HOT_INDEX_CACHE),
+        "hits": _HOT_CACHE_HITS,
+        "misses": _HOT_CACHE_MISSES,
+    }
+
+
+def _hot_key_digest(key: bytes) -> bytes:
+    return hashlib.sha256(key).digest()
+
+
+def _hot_put(cache_key: str, mtime_ns: int, size: int, key_digest: bytes, entries: Dict[str, Dict[str, Any]]) -> None:
+    if cache_key in _HOT_INDEX_CACHE:
+        _HOT_INDEX_CACHE.pop(cache_key, None)
+    elif len(_HOT_INDEX_CACHE) >= _HOT_CACHE_MAX_ENTRIES:
+        oldest = next(iter(_HOT_INDEX_CACHE))
+        _HOT_INDEX_CACHE.pop(oldest, None)
+    _HOT_INDEX_CACHE[cache_key] = (mtime_ns, size, key_digest, copy.deepcopy(entries))
+
 
 def _index_key(kek: bytes, app_id: str, vault_ref: str) -> bytes:
     return hkdf_sha256(kek, b"gewu-atlas-note-index/v1", f"{app_id}|{vault_ref}".encode("utf-8"), length=32)
 
 
 def _load_index(cache_file: Path, key: bytes) -> Dict[str, Dict[str, Any]]:
+    global _HOT_CACHE_HITS, _HOT_CACHE_MISSES
     if not cache_file.exists():
+        if _HOT_CACHE_ENABLED:
+            _HOT_INDEX_CACHE.pop(str(cache_file), None)
         return {}
     _check_no_symlink(cache_file)
+    c_key = str(cache_file)
+    k_dig = _hot_key_digest(key) if _HOT_CACHE_ENABLED else b""
+    st_mtime = -1
+    st_size = -1
+    if _HOT_CACHE_ENABLED:
+        try:
+            st = cache_file.stat()
+            st_mtime = int(st.st_mtime_ns)
+            st_size = int(st.st_size)
+            hit = _HOT_INDEX_CACHE.get(c_key)
+            if hit is not None and hit[0] == st_mtime and hit[1] == st_size and hit[2] == k_dig:
+                _HOT_CACHE_HITS += 1
+                # Refresh LRU order and return a deep copy so callers cannot mutate cached entry dicts.
+                _hot_put(c_key, st_mtime, st_size, k_dig, hit[3])
+                return copy.deepcopy(hit[3])
+            _HOT_CACHE_MISSES += 1
+        except OSError:
+            pass
     try:
         blob = cache_file.read_bytes()
         if len(blob) < len(_INDEX_MAGIC) + _NONCE_LEN + _TAG_LEN + 1 or blob[:5] != _INDEX_MAGIC:
@@ -68,7 +135,10 @@ def _load_index(cache_file: Path, key: bytes) -> Dict[str, Dict[str, Any]]:
         pt = aead_xchacha20_poly1305_decrypt(key, nonce, ct, b"note-index-v1", tag)
         doc = json.loads(zlib.decompress(pt).decode("utf-8"))
         if isinstance(doc, dict) and doc.get("v") == _INDEX_VERSION and isinstance(doc.get("entries"), dict):
-            return doc["entries"]
+            entries = doc["entries"]
+            if _HOT_CACHE_ENABLED and st_mtime >= 0:
+                _hot_put(c_key, st_mtime, st_size, k_dig, entries)
+            return entries
     except Exception:
         return {}
     return {}
@@ -83,6 +153,12 @@ def _save_index(cache_file: Path, key: bytes, entries: Dict[str, Dict[str, Any]]
     )
     ct, tag = aead_xchacha20_poly1305_encrypt(key, nonce, payload, b"note-index-v1")
     _atomic_write_0600(cache_file, _INDEX_MAGIC + nonce + ct + tag)
+    if _HOT_CACHE_ENABLED:
+        try:
+            st = cache_file.stat()
+            _hot_put(str(cache_file), int(st.st_mtime_ns), int(st.st_size), _hot_key_digest(key), entries)
+        except OSError:
+            pass
 
 
 def scandir_vault_markdowns(vault_dir: Path) -> Dict[str, Tuple[int, int]]:
@@ -234,6 +310,7 @@ def _parse_note_entry(fp: Path, mtime_ns: int, size: int) -> Optional[Dict[str, 
         "title": str(meta.get("title") or fp.stem),
         "doc_type": str(meta.get("doc_type") or ""),
         "status": str(meta.get("status") or ""),
+        "private": bool(meta.get("private") is True),
         "aliases": aliases,
         "out_wikilinks": out_wikilinks,
         "vfs_cands": vfs_cands,

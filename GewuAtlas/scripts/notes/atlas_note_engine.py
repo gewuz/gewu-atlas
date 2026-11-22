@@ -22,6 +22,7 @@ from facade.atlas_domain_scope import (
 )
 from notes.atlas_yamlmini import (
     FrontmatterError,
+    drop_frontmatter_field,
     extract_frontmatter,
     extract_wikilinks,
     resolve_wikilink,
@@ -389,6 +390,24 @@ def _append_journal_event(
     return j_rel
 
 
+_RESOLVED_WL_PATH_RE = re.compile(r"\[\[([^\[\]|#\r\n]+/)([^\[\]|#\r\n]+)([#|][^\]\r\n]*)?\]\]")
+
+
+def _sanitize_resolved_links(rewrites: List[Dict[str, Any]], limit: int = 20) -> List[Dict[str, Any]]:
+    """Redact vault-internal directory prefixes in metadata resolved_links while preserving target_ref and stem."""
+    out: List[Dict[str, Any]] = []
+    for item in rewrites[:limit]:
+        if not isinstance(item, dict):
+            continue
+        clean = dict(item)
+        for fld in ("from", "to"):
+            val = clean.get(fld)
+            if isinstance(val, str) and "/" in val and "[[" in val:
+                clean[fld] = _RESOLVED_WL_PATH_RE.sub(lambda m: f"[[{m.group(2)}{m.group(3) or ''}]]", val)
+        out.append(clean)
+    return out
+
+
 def _parse_list_arg(raw: Any) -> List[str]:
     if raw is None:
         return []
@@ -696,8 +715,6 @@ def note_create(
         rendered = replace_frontmatter_field(rendered, "stage", "draft")
         rendered = replace_frontmatter_field(rendered, "type", "SYN")
         rendered = replace_frontmatter_field(rendered, "processed", "false")
-        rendered = replace_frontmatter_field(rendered, "extracted_to", "[]")
-        rendered = replace_frontmatter_field(rendered, "sources", "[]")
         rendered = replace_frontmatter_field(rendered, "created_by", f'"{fm_scalar(actor)}"')
         rendered = replace_frontmatter_field(rendered, "updated_by", f'"{fm_scalar(actor)}"')
     elif (by_actor or "").strip():
@@ -735,7 +752,7 @@ def note_create(
     pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=nref, rel=rel, meta=meta)
     if rewrites:
         pub["links_resolved_count"] = len(rewrites)
-        pub["resolved_links"] = rewrites[:20]
+        pub["resolved_links"] = _sanitize_resolved_links(rewrites, limit=20)
     sealed = [rel, j_rel]
     if dom and dom.get("project_rel_path"):
         sealed.append(str(dom["project_rel_path"]))
@@ -862,17 +879,36 @@ def _slice_text_lines(
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.+?)\s*$")
 
 
-def _extract_markdown_outline(body: str) -> List[Dict[str, Any]]:
+def _extract_markdown_outline(body: str, *, line_offset: int = 0) -> List[Dict[str, Any]]:
     from notes.atlas_markdown_blocks import code_line_mask
 
-    outline: List[Dict[str, Any]] = []
+    raw_headings: List[Tuple[int, int, str]] = []
     lines = body.splitlines()
     for idx, (line, is_code) in enumerate(zip(lines, code_line_mask(body)), start=1):
         if is_code:
             continue
         m = _ATX_HEADING_RE.match(line)
         if m:
-            outline.append({"level": len(m.group(1)), "heading": m.group(2).strip(), "line": idx})
+            raw_headings.append((idx, len(m.group(1)), m.group(2).strip()))
+    outline: List[Dict[str, Any]] = []
+    total_body_lines = len(lines)
+    for pos, (start_idx, lvl, htxt) in enumerate(raw_headings):
+        end_idx = total_body_lines
+        for next_idx, next_lvl, _ in raw_headings[pos + 1 :]:
+            if next_lvl <= lvl:
+                end_idx = next_idx - 1
+                break
+        sec_chars = sum(len(lines[i]) + 1 for i in range(start_idx - 1, max(start_idx - 1, end_idx)))
+        outline.append(
+            {
+                "level": lvl,
+                "heading": htxt,
+                "line": start_idx + line_offset,
+                "start_line": start_idx + line_offset,
+                "end_line": max(start_idx, end_idx) + line_offset,
+                "chars": sec_chars,
+            }
+        )
     return outline
 
 
@@ -972,17 +1008,24 @@ def _note_get_with_context(
     head: Optional[int] = None,
     tail: Optional[int] = None,
     section: Optional[str] = None,
+    outline: bool = False,
     backlink_map: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     raw_bytes = fpath.read_bytes()
     txt = raw_bytes.decode("utf-8")
-    meta, body, _ = extract_frontmatter(txt)
+    meta, body, has_fm = extract_frontmatter(txt)
+    body_line_offset = 0
+    if has_fm:
+        fm_match = re.match(r"\A---[^\S\n]*\r?\n.*?\r?\n---[^\S\n]*(?:\r?\n|$)", txt, re.S)
+        if fm_match:
+            body_line_offset = txt[: fm_match.end()].count("\n")
 
     outgoing_refs = []
     for target in extract_wikilinks(body):
         candidates = resolve_wikilink(target, rel, mapping)
+        safe_stem = target.rsplit("/", 1)[-1] if "/" in target else target
         outgoing_refs.append({
-            "stem": target,
+            "stem": safe_stem,
             "note_ref": mapping[candidates[0]] if len(candidates) == 1 else None,
             "resolution": "resolved" if len(candidates) == 1 else ("ambiguous" if candidates else "missing"),
             "candidate_refs": [mapping[p] for p in candidates],
@@ -1007,7 +1050,12 @@ def _note_get_with_context(
     pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=note_ref, rel=rel, meta=meta)
     pub["aliases"] = meta.get("aliases") or []
     body_clean = body.strip()
-    if section is not None and str(section).strip():
+    if outline:
+        pub["outline_only"] = True
+        pub["total_lines"] = len(txt.splitlines())
+        pub["total_chars"] = len(body_clean)
+        pub["toc_outline"] = _extract_markdown_outline(body, line_offset=body_line_offset)
+    elif section is not None and str(section).strip():
         sec_text = _extract_section_body(body_clean, str(section))
         if sec_text is None:
             raise VaultStoreError("E_NOT_FOUND", f"未在笔记 {note_ref} 中找到匹配章节: {section}", exit_code=1)
@@ -1020,13 +1068,13 @@ def _note_get_with_context(
         )
         pub["truncated_preview"] = True
         pub["total_chars"] = len(body_clean)
-        pub["toc_outline"] = _extract_markdown_outline(body_clean)
+        pub["toc_outline"] = _extract_markdown_outline(body, line_offset=body_line_offset)
     else:
         pub["content"] = body_clean
     pub["content_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
     pub["outgoing_links"] = outgoing_refs
     pub["backlink_refs"] = backlinks
-    if raw or start_line is not None or end_line is not None or head is not None or tail is not None:
+    if not outline and (raw or start_line is not None or end_line is not None or head is not None or tail is not None):
         sliced = _slice_text_lines(txt, start_line=start_line, end_line=end_line, head=head, tail=tail)
         pub["frontmatter"] = meta
         pub["size_bytes"] = len(raw_bytes)
@@ -1050,6 +1098,7 @@ def note_get(
     head: Optional[int] = None,
     tail: Optional[int] = None,
     section: Optional[str] = None,
+    outline: bool = False,
     cache_dir: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     from storage.note_index_cache import reconcile_note_index, resolve_note_jit
@@ -1087,6 +1136,7 @@ def note_get(
         head=head,
         tail=tail,
         section=section,
+        outline=outline,
     )
     return pub, [rel]
 
@@ -1105,6 +1155,7 @@ def note_get_batch(
     head: Optional[int] = None,
     tail: Optional[int] = None,
     section: Optional[str] = None,
+    outline: bool = False,
     cache_dir: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Read multiple notes by handle in a single pass sharing one index & link-graph load."""
@@ -1150,6 +1201,7 @@ def note_get_batch(
             head=head,
             tail=tail,
             section=section,
+            outline=outline,
             backlink_map=bl_map,
         )
         items.append(pub)
@@ -1202,6 +1254,60 @@ def _update_frontmatter_preserving_extras(
     return "\n".join(["---", *fm_lines, "---", "", cleaned_body, ""])
 
 
+def _enforce_note_write_guards(
+    *,
+    vault_dir: Path,
+    rel: str,
+    old_body: str,
+    new_body: Optional[str],
+    allow_managed_block: bool = False,
+    op_name: str = "note-update",
+) -> None:
+    """Shared pre-write guard for note-update & note-patch: frozen domain, 21-Library read-only body, 05-Journal human section, and managed blocks."""
+    parts = Path(rel).parts
+    if len(parts) >= 2 and parts[0] == "30-Projects":
+        proj_id = parts[1]
+        pdir = vault_dir / "30-Projects" / proj_id
+        if pdir.is_dir():
+            p_manifest = read_domain_manifest(pdir, proj_id)
+            p_status = str(p_manifest.get("status") or "").strip().lower()
+            if p_status in ("archived", "deprecated"):
+                raise VaultStoreError(
+                    "E_DOMAIN_FROZEN",
+                    f"课题域 '{proj_id}' 处于冻结状态 ({p_status})，禁止通过 {op_name} 写入或修改",
+                    exit_code=1,
+                )
+
+    zone = _zone_for_rel(rel)
+    if zone == "library" and new_body is not None and new_body.strip() != old_body.strip():
+        raise VaultStoreError(
+            "E_READONLY_LIBRARY",
+            f"21-Library 原始文献正文只读保真，禁止通过 {op_name} 改写正文；请在切片/原子卡或工作台草稿区派生",
+            exit_code=1,
+        )
+
+    if rel.startswith("05-Journal/") and new_body is not None:
+        human_before = _extract_section_body(old_body, "人类记录")
+        if human_before is not None:
+            human_after = _extract_section_body(new_body, "人类记录")
+            if human_after != human_before:
+                raise VaultStoreError(
+                    "E_JOURNAL_PROTECTED",
+                    f"日记（05-Journal）# 人类记录 区受永久保护，严禁通过 {op_name} 修改",
+                    exit_code=1,
+                )
+
+    if new_body is not None and not allow_managed_block:
+        managed_before = _extract_managed_blocks(old_body)
+        for bname, block_exact in managed_before:
+            if block_exact not in new_body:
+                raise VaultStoreError(
+                    "E_MANAGED_BLOCK_PROTECTED",
+                    f"更新触碰或破坏了系统受控块（{bname}），已自动拦截；如需显式覆盖请传 --allow_managed_block true",
+                    exit_code=1,
+                )
+
+
 def _prepare_note_update(
     *,
     vault_dir: Path,
@@ -1216,6 +1322,8 @@ def _prepare_note_update(
     set_meta: Any = None,
     expected_sha256: Optional[str] = None,
     link_index: Optional[Dict[str, Any]] = None,
+    allow_managed_block: bool = False,
+    op_name: str = "note-update",
 ) -> Tuple[Path, str, str, Dict[str, Any], List[Dict[str, str]], Optional[Dict[str, Any]], bytes, str]:
     rec = note_reg.resolve_handle(vault_ref, note_ref)
     rel = str(rec["note_rel_path"])
@@ -1228,6 +1336,14 @@ def _prepare_note_update(
         raise VaultStoreError("E_VERSION_CONFLICT", f"笔记 {note_ref} 内容哈希已变化，请重新读取后再更新", exit_code=1)
     old_txt = raw_bytes.decode("utf-8")
     meta, body, has_fm = extract_frontmatter(old_txt)
+    _enforce_note_write_guards(
+        vault_dir=vault_dir,
+        rel=rel,
+        old_body=body,
+        new_body=content,
+        allow_managed_block=allow_managed_block,
+        op_name=op_name,
+    )
     extra_meta = _parse_set_meta_arg(set_meta)
     doc_type = str(extra_meta.get("doc_type") or meta.get("doc_type") or "atomic")
     new_title = title.strip() if title is not None else str(extra_meta.get("title") or meta.get("title") or fpath.stem)
@@ -1247,11 +1363,17 @@ def _prepare_note_update(
             updates.append(("summary", f'"{fm_scalar(new_summary or new_title)}"'))
             updates.append(("status", new_status))
         updates.extend([("tags", f"[{tags_yaml}]"), ("updated", _today())])
+        drop_keys: List[str] = []
         for mk, mv in extra_meta.items():
             if mk in ("doc_type", "title", "summary", "status", "tags", "updated"):
                 continue
-            updates.append((mk, _format_yaml_meta_value(mv)))
+            if mv is None:
+                drop_keys.append(mk)
+            else:
+                updates.append((mk, _format_yaml_meta_value(mv)))
         rendered = _update_frontmatter_preserving_extras(old_txt, updates, content, new_title)
+        for dk in drop_keys:
+            rendered = drop_frontmatter_field(rendered, dk)
     else:
         new_body = content if content is not None else body
         rendered = _render_note_md(
@@ -1299,6 +1421,7 @@ def note_update(
     content: Optional[str],
     set_meta: Any = None,
     expected_sha256: Optional[str] = None,
+    allow_managed_block: bool = False,
     cache_dir: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     fpath, rel, rendered, nmeta, rewrites, _, _, pre_sha = _prepare_note_update(
@@ -1313,6 +1436,8 @@ def note_update(
         content=content,
         set_meta=set_meta,
         expected_sha256=expected_sha256,
+        allow_managed_block=allow_managed_block,
+        op_name="note-update",
     )
     _atomic_write_md(fpath, rendered, expected_sha256=expected_sha256 or pre_sha)
     if cache_dir is not None:
@@ -1322,7 +1447,7 @@ def note_update(
     pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=note_ref, rel=rel, meta=nmeta)
     if rewrites:
         pub["links_resolved_count"] = len(rewrites)
-        pub["resolved_links"] = rewrites[:20]
+        pub["resolved_links"] = _sanitize_resolved_links(rewrites, limit=20)
     return pub, [rel]
 
 
@@ -1341,6 +1466,7 @@ def note_update_batch(
     status: Optional[str] = None,
     content: Optional[str] = None,
     set_meta: Any = None,
+    allow_managed_block: bool = False,
     cache_dir: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Transactional batch note update: pre-validate all notes in memory, write atomically, single index sync."""
@@ -1399,6 +1525,8 @@ def note_update_batch(
             set_meta=spec.get("set_meta"),
             expected_sha256=exp_sha,
             link_index=shared_link_idx,
+            allow_managed_block=bool(spec.get("allow_managed_block", allow_managed_block)),
+            op_name="note-update",
         )
         prepared.append((nref, fpath, rel, rendered, nmeta, rewrites, exp_sha or pre_sha, raw_bytes))
 
@@ -1414,7 +1542,7 @@ def note_update_batch(
             pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=nref, rel=rel, meta=nmeta)
             if rewrites:
                 pub["links_resolved_count"] = len(rewrites)
-                pub["resolved_links"] = rewrites[:20]
+                pub["resolved_links"] = _sanitize_resolved_links(rewrites, limit=20)
             updated_notes.append(pub)
     except Exception as exc:
         rollback_errors: List[str] = []
@@ -2170,6 +2298,14 @@ def note_slice(
     _atomic_write_md(vault_dir / toc_rel, "\n".join(toc_lines))
     created_rels.append(toc_rel)
 
+    source_processed = False
+    src_dt = str(meta.get("doc_type") or "").strip().lower()
+    if has_fm and src_dt in ("library", "artifact"):
+        if meta.get("processed") is not True:
+            updated_src = replace_frontmatter_field(txt, "processed", "true")
+            _atomic_write_md(src_path, updated_src)
+        source_processed = True
+
     all_md = _scan_vault_markdowns(vault_dir)
     mapping = note_reg.sync_paths(vault_ref, all_md)
     slice_refs = [
@@ -2179,6 +2315,7 @@ def note_slice(
     res: Dict[str, Any] = {
         "vault_ref": vault_ref,
         "source_note_ref": note_ref,
+        "source_processed": source_processed,
         "domain_scope": dom["scope"],
         "project_ref": dom.get("project_ref"),
         "project_id": target_pid,
@@ -2355,3 +2492,743 @@ def file_read(
         "path_sealed": True,
     }
     return res, [sealed_rel]
+
+
+_MANAGED_BLOCK_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("moc-index", "<!-- atlas:moc-index:start -->", "<!-- atlas:moc-index:end -->"),
+    ("workbench-preset", "<!-- atlas:workbench-preset:begin -->", "<!-- atlas:workbench-preset:end -->"),
+    ("manifest-ledger", "<!-- atlas:manifest-ledger:begin -->", "<!-- atlas:manifest-ledger:end -->"),
+    ("manifest-history", "<!-- atlas:manifest-history:begin -->", "<!-- atlas:manifest-history:end -->"),
+)
+
+
+def _extract_managed_blocks(body: str) -> List[Tuple[str, str]]:
+    found: List[Tuple[str, str]] = []
+    for name, start_tok, end_tok in _MANAGED_BLOCK_SPECS:
+        idx = body.find(start_tok)
+        if idx < 0:
+            continue
+        end_idx = body.find(end_tok, idx + len(start_tok))
+        if end_idx < 0:
+            continue
+        found.append((name, body[idx : end_idx + len(end_tok)]))
+    return found
+
+
+def _list_body_headings(body: str, limit: int = 12) -> List[str]:
+    from notes.atlas_markdown_blocks import code_line_mask
+
+    lines = body.splitlines()
+    mask = code_line_mask(body)
+    out: List[str] = []
+    for line, is_code in zip(lines, mask):
+        if is_code:
+            continue
+        m = _ATX_HEADING_RE.match(line)
+        if m:
+            out.append(f"{m.group(1)} {m.group(2).strip()}")
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _replace_section_body(body: str, section_query: str, new_section_content: str) -> str:
+    """Replace the targeted Markdown heading section (preserving surrounding sections)."""
+    from notes.atlas_markdown_blocks import code_line_mask
+
+    raw_q = section_query.strip()
+    if not raw_q:
+        raise VaultStoreError("E_PARAM_MISSING", "--section 不能为空", exit_code=1)
+    q_clean = re.sub(r"^#{1,6}\s+", "", raw_q).strip().casefold()
+    lines = body.splitlines()
+    mask = code_line_mask(body)
+    headings: List[Tuple[int, int, str, str]] = []
+    for idx, (line, is_code) in enumerate(zip(lines, mask)):
+        if is_code:
+            continue
+        m = _ATX_HEADING_RE.match(line)
+        if m:
+            headings.append((idx, len(m.group(1)), m.group(2).strip(), line))
+    match_pos: Optional[int] = None
+    for pos, (_li, _lvl, htxt, _raw_line) in enumerate(headings):
+        if htxt.casefold() == q_clean:
+            match_pos = pos
+            break
+    if match_pos is None:
+        for pos, (_li, _lvl, htxt, _raw_line) in enumerate(headings):
+            if q_clean in htxt.casefold():
+                match_pos = pos
+                break
+    if match_pos is None:
+        avail = [f"{'#' * lvl} {htxt}" for _li, lvl, htxt, _raw in headings[:12]]
+        hint = f"；当前可用标题: {', '.join(avail)}" if avail else "；当前正文无 Markdown 标题"
+        raise VaultStoreError("E_PATCH_NOT_FOUND", f"未找到匹配章节标题: {section_query}{hint}", exit_code=1)
+
+    start_idx, start_lvl, _htxt, orig_heading_line = headings[match_pos]
+    end_idx = len(lines)
+    for next_idx, next_lvl, _ntxt, _nraw in headings[match_pos + 1 :]:
+        if next_lvl <= start_lvl:
+            end_idx = next_idx
+            break
+
+    rep = new_section_content.strip("\r\n")
+    rep_lines = rep.splitlines() if rep else []
+    if rep_lines and _ATX_HEADING_RE.match(rep_lines[0]):
+        replacement_block = rep_lines
+    else:
+        replacement_block = [orig_heading_line, "", *rep_lines] if rep_lines else [orig_heading_line]
+
+    # Keep clean blank-line separation before the following heading if any
+    tail_lines = lines[end_idx:]
+    if tail_lines and replacement_block and replacement_block[-1].strip() != "":
+        replacement_block = [*replacement_block, ""]
+
+    merged = [*lines[:start_idx], *replacement_block, *tail_lines]
+    return "\n".join(merged)
+
+
+def _apply_patch_op(body: str, spec: Dict[str, Any]) -> Tuple[str, str]:
+    op = str(spec.get("op") or "").strip().lower()
+    if op == "replace":
+        old_text = spec.get("old_text")
+        new_text = spec.get("new_text")
+        if old_text is None or str(old_text) == "":
+            raise VaultStoreError("E_PARAM_MISSING", "replace 补丁缺少非空 old_text", exit_code=1)
+        old_s = str(old_text)
+        new_s = "" if new_text is None else str(new_text)
+        replace_all = bool(spec.get("replace_all", False))
+        cnt = body.count(old_s)
+        if cnt == 0:
+            avail = _list_body_headings(body, limit=10)
+            hint = f"（当前标题大纲: {', '.join(avail)}）" if avail else ""
+            raise VaultStoreError("E_PATCH_NOT_FOUND", f"未在笔记正文中找到匹配的 old_text，请核对最新正文后重试{hint}", exit_code=1)
+        if cnt > 1 and not replace_all:
+            raise VaultStoreError(
+                "E_PATCH_AMBIGUOUS",
+                f"old_text 在正文中命中 {cnt} 处，请提供更长上下文片段或显式传 --replace_all true",
+                exit_code=1,
+            )
+        if replace_all:
+            return body.replace(old_s, new_s), f"replace_all({cnt})"
+        return body.replace(old_s, new_s, 1), "replace(1)"
+    if op == "section":
+        sec = str(spec.get("section") or "").strip()
+        if not sec:
+            raise VaultStoreError("E_PARAM_MISSING", "section 补丁缺少 --section 标题", exit_code=1)
+        new_content = "" if spec.get("content") is None else str(spec.get("content"))
+        return _replace_section_body(body, sec, new_content), f"section({sec})"
+    if op == "append":
+        add = "" if spec.get("content") is None else str(spec.get("content"))
+        if not add.strip():
+            raise VaultStoreError("E_PARAM_MISSING", "append 补丁缺少非空 --content", exit_code=1)
+        base = body.rstrip()
+        return (f"{base}\n\n{add.lstrip()}" if base else add.lstrip()), "append"
+    if op == "prepend":
+        add = "" if spec.get("content") is None else str(spec.get("content"))
+        if not add.strip():
+            raise VaultStoreError("E_PARAM_MISSING", "prepend 补丁缺少非空 --content", exit_code=1)
+        base = body.lstrip()
+        return (f"{add.rstrip()}\n\n{base}" if base else add.rstrip()), "prepend"
+    raise VaultStoreError("E_PARAM_INVALID", f"不支持的补丁操作 op={op!r}（仅支持 replace/section/append/prepend）", exit_code=1)
+
+
+def note_patch(
+    *,
+    vault_dir: Path,
+    vault_ref: str,
+    note_ref: str,
+    note_reg: KekNoteRegistry,
+    kek: bytes,
+    app_id: str,
+    old_text: Optional[str] = None,
+    new_text: Optional[str] = None,
+    replace_all: bool = False,
+    section: Optional[str] = None,
+    mode: Optional[str] = None,
+    content: Optional[str] = None,
+    ops_json: Any = None,
+    allow_managed_block: bool = False,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
+    tags: Any = None,
+    status: Optional[str] = None,
+    set_meta: Any = None,
+    expected_sha256: Optional[str] = None,
+    dry_run: bool = False,
+    cache_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Apply targeted incremental edits (replace/section/append/prepend/ops_json) to a note atomically."""
+    import json as _json
+    from storage.note_index_cache import resolve_note_jit, update_single_note_index
+
+    rel, fpath = resolve_note_jit(
+        vault_dir=vault_dir,
+        vault_ref=vault_ref,
+        note_ref=note_ref,
+        note_reg=note_reg,
+        kek=kek,
+        app_id=app_id,
+        cache_dir=cache_dir,
+    )
+    zone = _zone_for_rel(rel)
+    if zone == "library":
+        raise VaultStoreError(
+            "E_READONLY_LIBRARY",
+            "21-Library 原始文献正文只读保真，禁止通过 note-patch 改写正文；请在切片/原子卡或工作台草稿区派生",
+            exit_code=1,
+        )
+
+    raw_bytes = fpath.read_bytes()
+    pre_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if expected_sha256 and pre_sha != expected_sha256:
+        raise VaultStoreError("E_VERSION_CONFLICT", f"笔记 {note_ref} 内容哈希已变化，请重新读取后再补丁更新", exit_code=1)
+
+    old_txt = raw_bytes.decode("utf-8")
+    _meta, body, _has_fm = extract_frontmatter(old_txt)
+    is_journal = rel.startswith("05-Journal/")
+    human_journal_before = _extract_section_body(body, "人类记录") if is_journal else None
+
+    ops: List[Dict[str, Any]] = []
+    if ops_json is not None and str(ops_json).strip():
+        if isinstance(ops_json, list):
+            raw_ops = ops_json
+        else:
+            try:
+                raw_ops = _json.loads(str(ops_json))
+            except Exception as exc:
+                raise VaultStoreError("E_PARAM_INVALID", f"--ops_json JSON 解析失败: {exc}", exit_code=1) from exc
+        if not isinstance(raw_ops, list) or not raw_ops:
+            raise VaultStoreError("E_PARAM_INVALID", "--ops_json 必须为非空 JSON 数组", exit_code=1)
+        for item in raw_ops:
+            if not isinstance(item, dict):
+                raise VaultStoreError("E_PARAM_INVALID", "--ops_json 每项必须为 JSON 对象", exit_code=1)
+            ops.append(item)
+    elif old_text is not None:
+        ops.append({"op": "replace", "old_text": old_text, "new_text": new_text, "replace_all": bool(replace_all)})
+    elif section is not None and str(section).strip():
+        ops.append({"op": "section", "section": str(section).strip(), "content": content})
+    elif mode is not None and str(mode).strip().lower() in ("append", "prepend"):
+        ops.append({"op": str(mode).strip().lower(), "content": content})
+    else:
+        raise VaultStoreError(
+            "E_PARAM_MISSING",
+            "note-patch 需要提供 --old_text/--new_text、--section/--content、--mode append|prepend 或 --ops_json",
+            exit_code=1,
+        )
+
+    managed_before = _extract_managed_blocks(body)
+    cur_body = body
+    applied_labels: List[str] = []
+    for spec in ops:
+        cur_body, label = _apply_patch_op(cur_body, spec)
+        applied_labels.append(label)
+
+    if is_journal and human_journal_before is not None:
+        human_journal_after = _extract_section_body(cur_body, "人类记录")
+        if human_journal_after != human_journal_before:
+            raise VaultStoreError(
+                "E_JOURNAL_PROTECTED",
+                "日记（05-Journal）# 人类记录 区受永久保护，严禁通过 note-patch 修改",
+                exit_code=1,
+            )
+
+    if not allow_managed_block and managed_before:
+        for bname, block_exact in managed_before:
+            if block_exact not in cur_body:
+                raise VaultStoreError(
+                    "E_MANAGED_BLOCK_PROTECTED",
+                    f"补丁触碰或破坏了系统受控块（{bname}），已自动拦截；如需显式覆盖请传 --allow_managed_block true",
+                    exit_code=1,
+                )
+
+    fpath, rel, rendered, nmeta, rewrites, _, _, latest_sha = _prepare_note_update(
+        vault_dir=vault_dir,
+        vault_ref=vault_ref,
+        note_ref=note_ref,
+        note_reg=note_reg,
+        title=title,
+        summary=summary,
+        tags=tags,
+        status=status,
+        content=cur_body,
+        set_meta=set_meta,
+        expected_sha256=expected_sha256 or pre_sha,
+        allow_managed_block=allow_managed_block,
+        op_name="note-patch",
+    )
+    if dry_run:
+        pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=note_ref, rel=rel, meta=nmeta)
+        pub["dry_run"] = True
+        pub["changed"] = (rendered.encode("utf-8") != raw_bytes)
+        pub["patch_ops_applied"] = applied_labels
+        pub["chars_before"] = len(body)
+        pub["chars_after"] = len(cur_body)
+        if rewrites:
+            pub["links_resolved_count"] = len(rewrites)
+        return pub, [rel]
+
+    _atomic_write_md(fpath, rendered, expected_sha256=expected_sha256 or latest_sha)
+    if cache_dir is not None:
+        update_single_note_index(vault_dir=vault_dir, vault_ref=vault_ref, rel_paths=[rel], kek=kek, app_id=app_id, cache_dir=cache_dir)
+
+    new_bytes = fpath.read_bytes()
+    pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=note_ref, rel=rel, meta=nmeta)
+    pub["content_sha256"] = hashlib.sha256(new_bytes).hexdigest()
+    pub["patch_ops_applied"] = applied_labels
+    pub["chars_before"] = len(body)
+    pub["chars_after"] = len(cur_body)
+    if rewrites:
+        pub["links_resolved_count"] = len(rewrites)
+        pub["resolved_links"] = _sanitize_resolved_links(rewrites, limit=20)
+    return pub, [rel]
+
+
+def note_patch_batch(
+    *,
+    vault_dir: Path,
+    vault_ref: str,
+    note_refs: Any,
+    note_reg: KekNoteRegistry,
+    kek: bytes,
+    app_id: str,
+    old_text: Optional[str] = None,
+    new_text: Optional[str] = None,
+    replace_all: bool = False,
+    section: Optional[str] = None,
+    mode: Optional[str] = None,
+    content: Optional[str] = None,
+    ops_json: Any = None,
+    allow_managed_block: bool = False,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
+    tags: Any = None,
+    status: Optional[str] = None,
+    set_meta: Any = None,
+    dry_run: bool = False,
+    cache_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Apply the same incremental patch across multiple notes safely (skipping non-matching notes while enforcing all zone/block guards)."""
+    refs = list(dict.fromkeys(_parse_list_arg(note_refs)))
+    if not refs:
+        raise VaultStoreError("E_PARAM_MISSING", "批量 note-patch 需要非空 --note_refs", exit_code=1)
+    if len(refs) > 50:
+        raise VaultStoreError("E_PARAM_INVALID", "单次跨卡 note-patch 最多支持 50 篇笔记", exit_code=1)
+
+    results: List[Dict[str, Any]] = []
+    sealed_all: List[str] = []
+    patched = 0
+    skipped = 0
+    failed = 0
+    for nref in refs:
+        try:
+            pub, npaths = note_patch(
+                vault_dir=vault_dir,
+                vault_ref=vault_ref,
+                note_ref=nref,
+                note_reg=note_reg,
+                kek=kek,
+                app_id=app_id,
+                old_text=old_text,
+                new_text=new_text,
+                replace_all=replace_all,
+                section=section,
+                mode=mode,
+                content=content,
+                ops_json=ops_json,
+                allow_managed_block=allow_managed_block,
+                title=title,
+                summary=summary,
+                tags=tags,
+                status=status,
+                set_meta=set_meta,
+                dry_run=dry_run,
+                cache_dir=cache_dir,
+            )
+            sealed_all.extend(npaths)
+            patched += 1
+            results.append(
+                {
+                    "note_ref": nref,
+                    "status": "would_patch" if dry_run else "patched",
+                    "title": pub.get("title"),
+                    "zone": pub.get("zone"),
+                    "patch_ops_applied": pub.get("patch_ops_applied"),
+                    "chars_before": pub.get("chars_before"),
+                    "chars_after": pub.get("chars_after"),
+                }
+            )
+        except VaultStoreError as exc:
+            if exc.code == "E_PATCH_NOT_FOUND":
+                skipped += 1
+                results.append({"note_ref": nref, "status": "skipped", "code": exc.code, "reason": exc.message})
+            else:
+                failed += 1
+                results.append({"note_ref": nref, "status": "failed", "code": exc.code, "reason": exc.message})
+    return {
+        "vault_ref": vault_ref,
+        "dry_run": bool(dry_run),
+        "total": len(refs),
+        "patched": patched,
+        "skipped": skipped,
+        "failed": failed,
+        "results": results,
+        "path_sealed": True,
+    }, sealed_all
+
+
+def note_grep(
+    *,
+    vault_dir: Path,
+    vault_ref: str,
+    note_reg: KekNoteRegistry,
+    kek: bytes,
+    app_id: str,
+    pattern: str,
+    regex: bool = False,
+    case_sensitive: bool = False,
+    context_lines: int = 1,
+    max_matches: int = 50,
+    zone: Optional[str] = None,
+    project_ref: Optional[str] = None,
+    proj_reg: Any = None,
+    doc_type: Optional[str] = None,
+    private: bool = False,
+    include_archived: bool = False,
+    include_workbench: bool = False,
+    with_section: bool = False,
+    cache_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Controlled cross-note literal/regex search returning opaque handles + line context (zero path leak)."""
+    from storage.note_index_cache import reconcile_note_index
+
+    pat_raw = str(pattern or "")
+    if not pat_raw:
+        raise VaultStoreError("E_PARAM_MISSING", "note-grep 需要提供非空 --pattern", exit_code=1)
+    if regex:
+        if len(pat_raw) > 256:
+            raise VaultStoreError("E_PARAM_INVALID", "正则表达式长度不能超过 256 字符", exit_code=1)
+        if re.search(r"\([^()]*[+*][^()]*\)\s*(?:[+*?]|\{\d)", pat_raw):
+            raise VaultStoreError("E_PARAM_INVALID", "拒绝存在灾难性回溯（ReDoS）风险的嵌套量词正则表达式", exit_code=1)
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        rx = re.compile(pat_raw if regex else re.escape(pat_raw), flags)
+    except re.error as exc:
+        raise VaultStoreError("E_PARAM_INVALID", f"无效正则表达式: {exc}", exit_code=1) from exc
+
+    ctx_n = max(0, min(5, int(context_lines)))
+    max_m = max(1, min(500, int(max_matches)))
+    norm_zone = str(zone or "").strip().lower() or None
+    norm_dt = str(doc_type or "").strip().lower() or None
+    proj_prefix: Optional[str] = None
+    if project_ref and proj_reg is not None:
+        prec = proj_reg.resolve_handle(vault_ref, str(project_ref).strip())
+        prel = str(prec.get("project_rel_path") or "").strip("/")
+        if prel:
+            proj_prefix = prel + "/"
+
+    private_projects: set[str] = set()
+    pdir = vault_dir / "30-Projects"
+    if pdir.is_dir():
+        for pd in pdir.iterdir():
+            if pd.is_dir() and not pd.name.startswith("."):
+                m = read_domain_manifest(pd, pd.name)
+                if m.get("private") is True:
+                    private_projects.add(pd.name)
+
+    entries, mapping = reconcile_note_index(
+        vault_dir=vault_dir,
+        vault_ref=vault_ref,
+        note_reg=note_reg,
+        kek=kek,
+        app_id=app_id,
+        cache_dir=cache_dir,
+    )
+
+    results: List[Dict[str, Any]] = []
+    sealed_rels: List[str] = []
+    total_matches = 0
+    truncated = False
+    allow_wb = bool(include_workbench) or (norm_zone == "workbench") or (proj_prefix is not None and norm_zone is None)
+
+    for rel in sorted(entries.keys()):
+        if proj_prefix and not rel.startswith(proj_prefix):
+            continue
+        ent = entries[rel]
+        z = _zone_for_rel(rel)
+        if norm_zone and z != norm_zone:
+            continue
+        if z == "workbench" and not allow_wb:
+            continue
+        if z in ("attic", "archives") and not include_archived and norm_zone != z:
+            continue
+        dt = str(ent.get("doc_type") or "").strip().lower()
+        if norm_dt and dt != norm_dt:
+            continue
+        st = str(ent.get("status") or "").strip().lower()
+        if st in ("archived", "deprecated") and not include_archived:
+            continue
+        if not private:
+            if bool(ent.get("private", False)) or z == "journal" or rel.startswith("05-Journal/"):
+                continue
+            parts = Path(rel).parts
+            if len(parts) >= 2 and parts[0] == "30-Projects" and parts[1] in private_projects:
+                continue
+
+        fp = vault_dir / rel
+        if not fp.is_file() or fp.is_symlink():
+            continue
+        try:
+            txt = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not rx.search(txt):
+            continue
+
+        nref = mapping.get(rel)
+        if not nref:
+            continue
+        lines = txt.splitlines()
+        note_headings: List[Tuple[int, int, str]] = []
+        if with_section:
+            from notes.atlas_markdown_blocks import code_line_mask
+
+            lmask = code_line_mask(txt)
+            for l_idx, (l_txt, l_code) in enumerate(zip(lines, lmask), start=1):
+                if l_code:
+                    continue
+                hm = _ATX_HEADING_RE.match(l_txt)
+                if hm:
+                    note_headings.append((l_idx, len(hm.group(1)), f"{hm.group(1)} {hm.group(2).strip()}"))
+        note_matches: List[Dict[str, Any]] = []
+        seen_sections: set[int] = set()
+        for idx, line in enumerate(lines, start=1):
+            if rx.search(line):
+                before = lines[max(0, idx - 1 - ctx_n) : idx - 1] if ctx_n > 0 else []
+                after = lines[idx : min(len(lines), idx + ctx_n)] if ctx_n > 0 else []
+                m_item: Dict[str, Any] = {
+                    "line_no": idx,
+                    "line": line[:300],
+                    "before": [b[:240] for b in before],
+                    "after": [a[:240] for a in after],
+                }
+                if with_section and note_headings:
+                    enclosing_pos = -1
+                    for hpos, (h_ln, _h_lvl, _h_lbl) in enumerate(note_headings):
+                        if h_ln <= idx:
+                            enclosing_pos = hpos
+                        else:
+                            break
+                    if enclosing_pos >= 0:
+                        s_ln, s_lvl, s_lbl = note_headings[enclosing_pos]
+                        e_ln = len(lines)
+                        for nh_ln, nh_lvl, _ in note_headings[enclosing_pos + 1 :]:
+                            if nh_lvl <= s_lvl:
+                                e_ln = nh_ln - 1
+                                break
+                        m_item["section_heading"] = s_lbl
+                        m_item["section_start_line"] = s_ln
+                        m_item["section_end_line"] = e_ln
+                        if s_ln not in seen_sections:
+                            seen_sections.add(s_ln)
+                            sec_txt = "\n".join(lines[s_ln - 1 : e_ln])
+                            m_item["section_content"] = sec_txt[:1500]
+                            if len(sec_txt) > 1500:
+                                m_item["section_truncated"] = True
+                note_matches.append(m_item)
+                total_matches += 1
+                if total_matches >= max_m:
+                    truncated = True
+                    break
+        if note_matches:
+            sealed_rels.append(rel)
+            results.append(
+                {
+                    "note_ref": nref,
+                    "title": str(ent.get("title") or Path(rel).stem),
+                    "zone": z,
+                    "doc_type": dt,
+                    "status": st,
+                    "match_count": len(note_matches),
+                    "matches": note_matches,
+                }
+            )
+        if truncated:
+            break
+
+    return {
+        "vault_ref": vault_ref,
+        "pattern": pat_raw,
+        "regex": bool(regex),
+        "project_ref": project_ref,
+        "zone": norm_zone,
+        "matched_notes": len(results),
+        "total_matches": total_matches,
+        "truncated": truncated,
+        "results": results,
+        "path_sealed": True,
+    }, sealed_rels
+
+
+def project_brief(
+    *,
+    vault_dir: Path,
+    vault_ref: str,
+    note_reg: KekNoteRegistry,
+    proj_reg: Any,
+    kek: bytes,
+    app_id: str,
+    project_ref: Optional[str] = None,
+    include_slices: bool = False,
+    max_notes: int = 200,
+    cache_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Single-call panoramic overview (counts, handles, metadata, link topology) for a project or vault."""
+    from storage.note_index_cache import build_backlink_map, reconcile_note_index
+
+    entries, mapping = reconcile_note_index(
+        vault_dir=vault_dir,
+        vault_ref=vault_ref,
+        note_reg=note_reg,
+        kek=kek,
+        app_id=app_id,
+        cache_dir=cache_dir,
+    )
+    bl_map = build_backlink_map(entries=entries, handle_map=mapping)
+
+    proj_prefix: Optional[str] = None
+    proj_meta: Optional[Dict[str, Any]] = None
+    sealed_rels: List[str] = []
+    if project_ref and proj_reg is not None:
+        prec = proj_reg.resolve_handle(vault_ref, str(project_ref).strip())
+        prel = str(prec.get("project_rel_path") or "").strip("/")
+        proj_id = Path(prel).name if prel else prec.get("project_id")
+        m_meta = read_domain_manifest(vault_dir / prel, str(proj_id or "")) if prel and (vault_dir / prel).is_dir() else {}
+        if prel:
+            proj_prefix = prel + "/"
+            sealed_rels.append(prel)
+        proj_meta = {
+            "project_ref": str(project_ref).strip(),
+            "project_id": m_meta.get("project_id") or proj_id,
+            "title": m_meta.get("title") or prec.get("title") or proj_id,
+            "status": m_meta.get("status") or prec.get("status") or "active",
+            "review_mode": m_meta.get("default_mode") or m_meta.get("review_mode") or prec.get("review_mode") or "supervised",
+            "visibility": "private" if m_meta.get("private") is True else (m_meta.get("visibility") or prec.get("visibility") or "internal"),
+        }
+
+    # Build fast wikilink target -> note_ref lookup using index entries
+    by_rel_no_md: Dict[str, str] = {(r[:-3] if r.endswith(".md") else r): r for r in mapping}
+    by_stem: Dict[str, List[str]] = {}
+    for r in mapping:
+        by_stem.setdefault(Path(r).stem, []).append(r)
+
+    zone_counts: Dict[str, int] = {}
+    status_counts: Dict[str, int] = {}
+    notes_rows: List[Dict[str, Any]] = []
+    edges: List[List[str]] = []
+    edge_seen: set[Tuple[str, str]] = set()
+    omitted_slices = 0
+    scope_rels = sorted(r for r in entries if (not proj_prefix or r.startswith(proj_prefix)))
+    scope_ref_set = {mapping[r] for r in scope_rels if r in mapping}
+
+    for rel in scope_rels:
+        if Path(rel).name.startswith("Manifest-"):
+            continue
+        ent = entries[rel]
+        nref = mapping.get(rel)
+        if not nref:
+            continue
+        z = _zone_for_rel(rel)
+        st = str(ent.get("status") or "active").strip().lower()
+        zone_counts[z] = zone_counts.get(z, 0) + 1
+        status_counts[st] = status_counts.get(st, 0) + 1
+        sealed_rels.append(rel)
+
+        out_refs: List[str] = []
+        for raw_t in ent.get("out_wikilinks") or []:
+            t = str(raw_t or "").strip()
+            if not t:
+                continue
+            t_no_md = t[:-3] if t.endswith(".md") else t
+            t_rel: Optional[str] = None
+            if "/" in t_no_md:
+                t_rel = by_rel_no_md.get(t_no_md)
+            else:
+                hits = by_stem.get(t_no_md)
+                if hits and len(hits) == 1:
+                    t_rel = hits[0]
+            if t_rel and t_rel != rel and t_rel in mapping:
+                dst_ref = mapping[t_rel]
+                if dst_ref not in out_refs:
+                    out_refs.append(dst_ref)
+                if dst_ref in scope_ref_set and (nref, dst_ref) not in edge_seen and len(edges) < 500:
+                    edge_seen.add((nref, dst_ref))
+                    edges.append([nref, dst_ref])
+
+        if z == "slices" and not include_slices:
+            omitted_slices += 1
+            continue
+        in_refs = bl_map.get(rel) or []
+        notes_rows.append(
+            {
+                "note_ref": nref,
+                "title": str(ent.get("title") or Path(rel).stem),
+                "zone": z,
+                "doc_type": str(ent.get("doc_type") or ""),
+                "status": st,
+                "size_bytes": int(ent.get("size", 0)),
+                "in_degree": len(in_refs),
+                "out_degree": len(out_refs),
+                "out_refs": out_refs[:12],
+            }
+        )
+
+    limit = max(1, min(1000, int(max_notes)))
+    notes_truncated = len(notes_rows) > limit
+    if notes_truncated:
+        notes_rows = notes_rows[:limit]
+
+    projects_overview: List[Dict[str, Any]] = []
+    if not project_ref and proj_reg is not None:
+        try:
+            proj_root = vault_dir / "30-Projects"
+            if proj_root.is_dir():
+                disk_proj_rels = sorted(
+                    f"30-Projects/{d.name}"
+                    for d in proj_root.iterdir()
+                    if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")
+                )
+                proj_reg.sync_projects(vault_ref, disk_proj_rels)
+            for p in proj_reg.list_projects(vault_ref):
+                prel = str(p.get("project_rel_path") or "").strip("/")
+                if prel:
+                    sealed_rels.append(prel)
+                pid = Path(prel).name if prel else p.get("project_id")
+                m_meta = read_domain_manifest(vault_dir / prel, str(pid or "")) if prel and (vault_dir / prel).is_dir() else {}
+                projects_overview.append(
+                    {
+                        "project_ref": p.get("project_ref"),
+                        "project_id": m_meta.get("project_id") or pid,
+                        "title": m_meta.get("title") or p.get("title") or pid,
+                        "status": m_meta.get("status") or p.get("status") or "active",
+                        "review_mode": m_meta.get("default_mode") or m_meta.get("review_mode") or "supervised",
+                    }
+                )
+        except Exception:
+            pass
+
+    return {
+        "vault_ref": vault_ref,
+        "scope": "project" if project_ref else "vault",
+        "project": proj_meta,
+        "projects": projects_overview if not project_ref else None,
+        "total_notes": sum(zone_counts.values()),
+        "zone_counts": zone_counts,
+        "status_counts": status_counts,
+        "omitted_slices_count": omitted_slices,
+        "returned_notes": len(notes_rows),
+        "notes_truncated": notes_truncated,
+        "notes": notes_rows,
+        "edge_count": len(edges),
+        "edges": edges,
+        "path_sealed": True,
+    }, sealed_rels

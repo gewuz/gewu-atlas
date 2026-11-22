@@ -21,9 +21,12 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import threading
 import zlib
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -38,6 +41,7 @@ from storage.vault_kek_store import (
     aead_xchacha20_poly1305_decrypt,
     aead_xchacha20_poly1305_encrypt,
     hkdf_sha256,
+    registry_file_lock,
 )
 
 CHG_HANDLE_RE = re.compile(r"^chg_[0-9]{2,6}$")
@@ -54,11 +58,12 @@ VAULT_GIT_EXCLUDE_BEGIN = "# --- GewuAtlas DOC track exclusions (managed) ---"
 VAULT_GIT_EXCLUDE_END = "# --- End GewuAtlas DOC track exclusions ---"
 VAULT_GIT_EXCLUDES = (
     VAULT_GIT_EXCLUDE_BEGIN,
-    "00-DropZone/",
-    "00-DropZone/**",
     "source/",
     "*/source/",
     "**/source/",
+    "98-Archives/",
+    "98-Archives/**",
+    "**/98-Archives/",
     "99-Assets/98-Archives/",
     "99-Assets/98-Archives/**",
     "*/99-Assets/98-Archives/",
@@ -69,11 +74,12 @@ VAULT_GIT_EXCLUDES = (
     "**/99-Assets/*archieve*/",
     ".trash/",
     ".trash/**",
+    ".obsidian/",
+    ".obsidian/**",
     ".DS_Store",
     "**/.DS_Store",
     "__pycache__/",
     "**/__pycache__/",
-    ".obsidian/workspace*",
     "*.tar",
     "*.tar.gz",
     VAULT_GIT_EXCLUDE_END,
@@ -505,12 +511,18 @@ class KekChangeRegistry:
         self.vault_ref = vault_ref
         self.base_dir = state_dir / "atlas-note-undo" / vault_ref
         self.index_path = self.base_dir / "index.enc"
+        self._thread_lock = threading.Lock()
         self._kek = hkdf_sha256(
             master_kek,
             salt=b"gewu-atlas-change-salt-v1",
             info=f"{app_id}||change-undo-v1||{vault_ref}".encode("utf-8"),
             length=32,
         )
+
+    @contextmanager
+    def _container_lock(self, *, shared: bool = False):
+        with registry_file_lock(self.index_path, shared=shared, thread_lock=self._thread_lock):
+            yield
 
     def _index_aad(self) -> bytes:
         return f"{self.app_id}||change-index||{self.vault_ref}".encode("utf-8")
@@ -570,11 +582,12 @@ class KekChangeRegistry:
     def mark_ticket_precommitted(self, ticket_id: str) -> None:
         if not ticket_id:
             return
-        doc = self._load_index()
-        tl = doc.setdefault("ticket_ledger", {})
-        entry = tl.setdefault(ticket_id, {"touched_files": [], "pre_committed": False, "post_commit_count": 0})
-        entry["pre_committed"] = True
-        self._save_index(doc)
+        with self._container_lock():
+            doc = self._load_index()
+            tl = doc.setdefault("ticket_ledger", {})
+            entry = tl.setdefault(ticket_id, {"touched_files": [], "pre_committed": False, "post_commit_count": 0})
+            entry["pre_committed"] = True
+            self._save_index(doc)
 
     def ticket_precommitted(self, ticket_id: str) -> bool:
         if not ticket_id:
@@ -584,6 +597,24 @@ class KekChangeRegistry:
         return bool(entry.get("pre_committed"))
 
     def record_change(
+        self,
+        *,
+        vault_dir: Path,
+        action: str,
+        actor: str,
+        ticket_id: str,
+        changes: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        with self._container_lock():
+            return self._record_change_unlocked(
+                vault_dir=vault_dir,
+                action=action,
+                actor=actor,
+                ticket_id=ticket_id,
+                changes=changes,
+            )
+
+    def _record_change_unlocked(
         self,
         *,
         vault_dir: Path,
@@ -784,6 +815,24 @@ class KekChangeRegistry:
         trash_reg: KekTrashRegistry,
         force: bool = False,
     ) -> Tuple[Dict[str, Any], List[str]]:
+        with self._container_lock():
+            return self._undo_change_unlocked(
+                vault_dir=vault_dir,
+                chg_id=chg_id,
+                note_reg=note_reg,
+                trash_reg=trash_reg,
+                force=force,
+            )
+
+    def _undo_change_unlocked(
+        self,
+        *,
+        vault_dir: Path,
+        chg_id: str,
+        note_reg: KekNoteRegistry,
+        trash_reg: KekTrashRegistry,
+        force: bool = False,
+    ) -> Tuple[Dict[str, Any], List[str]]:
         import base64
 
         if not CHG_HANDLE_RE.fullmatch((chg_id or "").strip()):
@@ -923,6 +972,10 @@ class KekChangeRegistry:
         }, sealed
 
     def purge_older_than(self, vault_dir: Path, days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = False) -> Dict[str, Any]:
+        with self._container_lock():
+            return self._purge_older_than_unlocked(vault_dir=vault_dir, days=days, dry_run=dry_run)
+
+    def _purge_older_than_unlocked(self, vault_dir: Path, days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = False) -> Dict[str, Any]:
         cutoff = _now_dt() - timedelta(days=max(0, int(days)))
         doc = self._load_index()
         kept_rows: List[Dict[str, Any]] = []
@@ -1033,11 +1086,19 @@ def _write_markdown_changelog(
 
 
 # ---------------------------------------------------------------------------
-# Detached Per-Vault DOC Git Track
+# Detached Per-Vault DOC Git Track & Unified Remote (GitHub/gh) Sync
 # ---------------------------------------------------------------------------
+
+_BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]{1,80}$")
+_SCP_REMOTE_RE = re.compile(r"^git@[A-Za-z0-9._-]+:[A-Za-z0-9._/-]+(?:\.git)?$")
+
 
 def _git_available() -> bool:
     return shutil.which("git") is not None
+
+
+def _gh_binary() -> Optional[str]:
+    return shutil.which("gh")
 
 
 def resolve_vault_git_dir(state_dir: Path, vault_ref: str, vault_dir: Path) -> Tuple[Path, str]:
@@ -1049,21 +1110,141 @@ def resolve_vault_git_dir(state_dir: Path, vault_ref: str, vault_dir: Path) -> T
     return detached, "detached_git_dir"
 
 
-def _run_git(git_dir: Path, vault_dir: Path, args: List[str]) -> Tuple[int, str, str]:
-    cmd = [
+def _run_git(
+    git_dir: Path,
+    vault_dir: Path,
+    args: List[str],
+    *,
+    timeout: int = 20,
+    network: bool = False,
+) -> Tuple[int, str, str]:
+    cmd: List[str] = [
         "git",
         "-c",
         "user.name=GewuAtlas",
         "-c",
         "user.email=atlas@gewu.local",
+    ]
+    if network:
+        gh_bin = _gh_binary()
+        if gh_bin:
+            cmd.extend([
+                "-c",
+                "credential.https://github.com.helper=",
+                "-c",
+                f"credential.https://github.com.helper=!{shlex.quote(gh_bin)} auth git-credential",
+            ])
+    cmd.extend([
         "--git-dir",
         str(git_dir),
         "--work-tree",
         str(vault_dir),
         *args,
-    ]
-    proc = subprocess.run(cmd, cwd=str(vault_dir), capture_output=True, text=True, timeout=20, check=False)
-    return proc.returncode, proc.stdout, proc.stderr
+    ])
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GCM_INTERACTIVE", "never")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(vault_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "git command timed out"
+
+
+def _validate_remote_url(raw_url: str) -> str:
+    url = str(raw_url or "").strip()
+    if not url:
+        raise VaultStoreError("E_PARAM_INVALID", "远端仓库地址不能为空", exit_code=1)
+    if url.startswith("-") or any(ch in url for ch in ("\r", "\n", "\t", "\x00", " ")):
+        raise VaultStoreError("E_PARAM_INVALID", "远端仓库地址含非法字符或前导横线", exit_code=1)
+    if re.match(r"^https?://", url, re.I):
+        rest = re.sub(r"^https?://", "", url, flags=re.I)
+        authority = rest.split("/", 1)[0]
+        if "@" in authority:
+            raise VaultStoreError("E_PARAM_INVALID", "禁止在远端 URL 中内嵌明文凭据或 Token，请使用 gh auth login 或 SSH", exit_code=1)
+        if not authority or "." not in authority:
+            raise VaultStoreError("E_PARAM_INVALID", "非法 HTTP(S) 远端地址", exit_code=1)
+        return url
+    if re.match(r"^ssh://", url, re.I):
+        return url
+    if _SCP_REMOTE_RE.fullmatch(url):
+        return url
+    if url.startswith("file://"):
+        return url
+    p = Path(url)
+    if p.is_absolute() and p.exists() and p.is_dir():
+        return str(p.resolve())
+    raise VaultStoreError(
+        "E_PARAM_INVALID",
+        "远端仓库地址仅支持 https://、ssh://、git@host:owner/repo.git 或已存在的本地 Git 裸仓目录",
+        exit_code=1,
+    )
+
+
+def _validate_branch_name(raw_branch: str) -> str:
+    br = str(raw_branch or "").strip()
+    if not br or br.startswith("-") or ".." in br or br.endswith("/") or br.startswith("/") or not _BRANCH_NAME_RE.fullmatch(br):
+        raise VaultStoreError("E_PARAM_INVALID", "非法分支名", exit_code=1)
+    return br
+
+
+def _sanitize_remote_url_for_display(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url:
+        return None
+    url = str(raw_url).strip()
+    if not url:
+        return None
+    if re.match(r"^https?://", url, re.I):
+        return re.sub(r"^(https?://)[^/@]+@", r"\1", url, flags=re.I)
+    if re.match(r"^ssh://", url, re.I) or _SCP_REMOTE_RE.fullmatch(url):
+        return url
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+    return f"local-remote:{digest}"
+
+
+def _classify_git_remote_error(stderr_text: str, rc: int) -> Tuple[str, str]:
+    low = (stderr_text or "").lower()
+    if rc == 124 or "timed out" in low:
+        return "network_error", "远端同步超时，请检查网络连接后重试"
+    if any(k in low for k in (
+        "authentication failed",
+        "could not read username",
+        "terminal prompts disabled",
+        "permission denied (publickey)",
+        "403",
+        "invalid username or token",
+        "repository not found",
+        "http basic: access denied",
+    )):
+        return "auth_required", "GitHub 远端认证失败或无权限，请在终端执行 gh auth login && gh auth setup-git 后重试"
+    if any(k in low for k in (
+        "could not resolve host",
+        "failed to connect",
+        "unable to access",
+        "connection reset",
+        "network is unreachable",
+        "ssl",
+    )):
+        return "network_error", "无法连接远端仓库，请检查网络或代理设置后重试"
+    if any(k in low for k in ("non-fast-forward", "fetch first", "rejected")):
+        return "diverged", "远端存在更新提交导致非快进拒绝，请执行 doc-sync 协调后再推送"
+    return "remote_error", _sanitize_git_msg_part(stderr_text, "remote_sync_error")
+
+
+def _git_config_get(git_dir: Path, vault_dir: Path, key: str) -> Optional[str]:
+    rc, out, _ = _run_git(git_dir, vault_dir, ["config", "--get", key])
+    if rc != 0:
+        return None
+    val = out.strip()
+    return val if val else None
 
 
 def ensure_vault_git_exclude(git_dir: Path) -> None:
@@ -1084,11 +1265,15 @@ def ensure_vault_git_exclude(git_dir: Path) -> None:
 
 
 def _sanitize_git_msg_part(raw: str, fallback: str) -> str:
-    txt = str(raw or "").replace("Volumes/", "").replace("GewuAtlas-data", "vault")
+    txt = str(raw or "").replace("Volumes/", "").replace("GewuAtlas-data", "vault").replace(".trash", "trash")
+    txt = re.sub(r"/Users/[^\s'\":,)]+", "<path>", txt)
+    txt = re.sub(r"/private/[^\s'\":,)]+", "<path>", txt)
+    txt = re.sub(r"/tmp/[^\s'\":,)]+", "<path>", txt)
+    txt = re.sub(r"/var/[^\s'\":,)]+", "<path>", txt)
     txt = re.sub(r"\b(?:20-AI-Zone|30-Projects|99-Assets|00-DropZone|90-System)/[^\s,)]*", "", txt)
     txt = re.sub(r"[A-Za-z0-9._-]+\.md\b", "note", txt)
     txt = re.sub(r"[\r\n\t]+", " ", txt).strip(" .:-/")
-    return (txt[:64] if txt else fallback)
+    return (txt[:80] if txt else fallback)
 
 
 def init_vault_git_repo(state_dir: Path, vault_ref: str, vault_dir: Path) -> Dict[str, Any]:
@@ -1101,7 +1286,7 @@ def init_vault_git_repo(state_dir: Path, vault_ref: str, vault_dir: Path) -> Dic
         _ensure_0700_dir(git_dir)
         if not (git_dir / "HEAD").is_file():
             proc = subprocess.run(
-                ["git", "--bare", "init", str(git_dir)],
+                ["git", "--bare", "init", "-b", "main", str(git_dir)],
                 cwd=str(vault_dir),
                 capture_output=True,
                 text=True,
@@ -1109,7 +1294,16 @@ def init_vault_git_repo(state_dir: Path, vault_ref: str, vault_dir: Path) -> Dic
                 check=False,
             )
             if proc.returncode != 0:
-                return {"initialized": False, "mode": "git_init_error", "head_short": None}
+                proc = subprocess.run(
+                    ["git", "--bare", "init", str(git_dir)],
+                    cwd=str(vault_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    return {"initialized": False, "mode": "git_init_error", "head_short": None}
             # Ensure bare config works cleanly with --work-tree
             subprocess.run(
                 ["git", "--git-dir", str(git_dir), "config", "core.bare", "false"],
@@ -1121,7 +1315,7 @@ def init_vault_git_repo(state_dir: Path, vault_ref: str, vault_dir: Path) -> Dic
             )
     else:
         if not (git_dir / "HEAD").is_file() and not git_dir.is_file():
-            subprocess.run(["git", "init"], cwd=str(vault_dir), capture_output=True, text=True, timeout=20, check=False)
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(vault_dir), capture_output=True, text=True, timeout=20, check=False)
 
     ensure_vault_git_exclude(git_dir)
 
@@ -1139,7 +1333,8 @@ def init_vault_git_repo(state_dir: Path, vault_ref: str, vault_dir: Path) -> Dic
         "initialized": True,
         "mode": mode,
         "head_short": out_head.strip() or None,
-        "ignored_scopes": ["dropzone", "archives", "source", "trash"],
+        "included_scopes": ["dropzone", "journal"],
+        "ignored_scopes": ["obsidian", "archives", "source", "trash"],
     }
 
 
@@ -1264,11 +1459,557 @@ def _parse_doc_git_porcelain_z(
     }
 
 
+def get_vault_doc_remote(
+    state_dir: Path,
+    vault_ref: str,
+    vault_dir: Path,
+    *,
+    fetch: bool = False,
+) -> Dict[str, Any]:
+    """Read Vault DOC Git remote binding, sync policy, and local ahead/behind status (zero-path safe)."""
+    base: Dict[str, Any] = {
+        "configured": False,
+        "remote_name": "origin",
+        "remote_url": None,
+        "branch": "main",
+        "auto_push": True,
+        "ahead": 0,
+        "behind": 0,
+        "tracking_ref_ready": False,
+        "gh_cli_available": _gh_binary() is not None,
+        "fetched": False,
+    }
+    if not _git_available():
+        return base
+    git_dir, _mode = resolve_vault_git_dir(state_dir, vault_ref, vault_dir)
+    if not (git_dir / "HEAD").is_file() and not git_dir.is_file():
+        return base
+
+    raw_url = _git_config_get(git_dir, vault_dir, "remote.origin.url")
+    branch = _git_config_get(git_dir, vault_dir, "gewu.syncBranch") or "main"
+    auto_raw = _git_config_get(git_dir, vault_dir, "gewu.autoPush")
+    auto_push = True if auto_raw is None else (auto_raw.lower() in ("true", "1", "yes", "on"))
+    base["branch"] = branch
+    base["auto_push"] = auto_push
+
+    if not raw_url:
+        return base
+
+    base["configured"] = True
+    base["remote_url"] = _sanitize_remote_url_for_display(raw_url)
+
+    if fetch:
+        rc_f, _, err_f = _run_git(git_dir, vault_dir, ["fetch", "--prune", "origin"], timeout=45, network=True)
+        if rc_f == 0:
+            base["fetched"] = True
+        else:
+            st, msg = _classify_git_remote_error(err_f, rc_f)
+            base["fetch_error"] = st
+            base["fetch_detail"] = msg
+
+    remote_ref = f"refs/remotes/origin/{branch}"
+    rc_ref, _, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--verify", remote_ref])
+    if rc_ref == 0:
+        base["tracking_ref_ready"] = True
+        rc_mb, _, _ = _run_git(git_dir, vault_dir, ["merge-base", "HEAD", remote_ref])
+        if rc_mb != 0:
+            base["unrelated_histories"] = True
+        else:
+            base["unrelated_histories"] = False
+            rc_lr, out_lr, _ = _run_git(git_dir, vault_dir, ["rev-list", "--left-right", "--count", f"HEAD...{remote_ref}"])
+            if rc_lr == 0:
+                parts = out_lr.strip().split()
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    base["ahead"] = int(parts[0])
+                    base["behind"] = int(parts[1])
+    return base
+
+
+def _ensure_vault_git_layout(
+    state_dir: Path,
+    vault_ref: str,
+    vault_dir: Path,
+    git_layout: str,
+) -> str:
+    """Safely switch a Vault's DOC Git dir between `detached` (runtime state) and `in-vault` (Obsidian Git compatible)."""
+    if git_layout not in ("in-vault", "detached"):
+        raise VaultStoreError("E_PARAM_INVALID", "git_layout 仅支持 in-vault 或 detached", exit_code=1)
+    in_vault = vault_dir / ".git"
+    detached = state_dir / "atlas-git" / f"{vault_ref}.git"
+    _check_no_symlink(in_vault)
+    if git_layout == "in-vault":
+        if in_vault.exists():
+            ensure_vault_git_exclude(in_vault)
+            return "in_vault_git"
+        if (detached / "HEAD").is_file():
+            shutil.move(str(detached), str(in_vault))
+            try:
+                os.chmod(in_vault, 0o755)
+            except OSError:
+                pass
+            _run_git(in_vault, vault_dir, ["config", "core.bare", "false"])
+            _run_git(in_vault, vault_dir, ["config", "--unset-all", "core.worktree"])
+            ensure_vault_git_exclude(in_vault)
+            return "in_vault_git"
+        proc = subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=str(vault_dir),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if proc.returncode != 0:
+            subprocess.run(["git", "init"], cwd=str(vault_dir), capture_output=True, text=True, timeout=20, check=False)
+        ensure_vault_git_exclude(in_vault)
+        return "in_vault_git"
+
+    # git_layout == "detached"
+    if not in_vault.exists():
+        return "detached_git_dir"
+    if not in_vault.is_dir():
+        raise VaultStoreError("E_PARAM_CONFLICT", "Vault 内 .git 不是标准目录，拒绝自动迁移至 detached", exit_code=1)
+    if detached.exists():
+        raise VaultStoreError("E_PARAM_CONFLICT", "运行态已存在同名 detached DOC Git 目录，拒绝覆盖迁移", exit_code=1)
+    _ensure_0700_dir(detached.parent)
+    shutil.move(str(in_vault), str(detached))
+    _ensure_0700_dir(detached)
+    _run_git(detached, vault_dir, ["config", "core.bare", "false"])
+    ensure_vault_git_exclude(detached)
+    return "detached_git_dir"
+
+
+def configure_vault_doc_remote(
+    *,
+    state_dir: Path,
+    vault_ref: str,
+    vault_dir: Path,
+    remote_url: Optional[str] = None,
+    branch: Optional[str] = None,
+    auto_push: Optional[bool] = None,
+    git_layout: Optional[str] = None,
+    clear: bool = False,
+) -> Dict[str, Any]:
+    """Bind, update, inspect, or clear a Vault's DOC Git remote (e.g., GitHub repo via gh CLI)."""
+    changed = False
+    if git_layout is not None:
+        _ensure_vault_git_layout(state_dir, vault_ref, vault_dir, git_layout)
+        changed = True
+    init_info = init_vault_git_repo(state_dir, vault_ref, vault_dir)
+    if not init_info.get("initialized"):
+        raise VaultStoreError("E_HALT_GIT", "当前环境未安装 Git 或 DOC 版本库初始化失败", exit_code=2)
+    git_dir, mode = resolve_vault_git_dir(state_dir, vault_ref, vault_dir)
+    ensure_vault_git_exclude(git_dir)
+
+    if clear:
+        _run_git(git_dir, vault_dir, ["remote", "remove", "origin"])
+        _run_git(git_dir, vault_dir, ["config", "--unset-all", "gewu.syncBranch"])
+        _run_git(git_dir, vault_dir, ["config", "--unset-all", "gewu.autoPush"])
+        changed = True
+    else:
+        if remote_url is not None:
+            valid_url = _validate_remote_url(remote_url)
+            existing_url = _git_config_get(git_dir, vault_dir, "remote.origin.url")
+            if existing_url is None:
+                rc, _, err = _run_git(git_dir, vault_dir, ["remote", "add", "origin", valid_url])
+            else:
+                rc, _, err = _run_git(git_dir, vault_dir, ["remote", "set-url", "origin", valid_url])
+            if rc != 0:
+                raise VaultStoreError("E_PARAM_INVALID", f"绑定远端失败: {_sanitize_git_msg_part(err, 'remote_error')}", exit_code=1)
+            if _git_config_get(git_dir, vault_dir, "gewu.autoPush") is None and auto_push is None:
+                _run_git(git_dir, vault_dir, ["config", "gewu.autoPush", "true"])
+            changed = True
+
+        if branch is not None:
+            valid_branch = _validate_branch_name(branch)
+            _run_git(git_dir, vault_dir, ["config", "gewu.syncBranch", valid_branch])
+            # Align initial local branch name when switching default branch cleanly
+            rc_cur, out_cur, _ = _run_git(git_dir, vault_dir, ["symbolic-ref", "--short", "HEAD"])
+            cur_br = out_cur.strip() if rc_cur == 0 else ""
+            if cur_br and cur_br != valid_branch:
+                rc_exists, _, _ = _run_git(git_dir, vault_dir, ["show-ref", "--verify", f"refs/heads/{valid_branch}"])
+                if rc_exists != 0:
+                    _run_git(git_dir, vault_dir, ["branch", "-M", valid_branch])
+            changed = True
+        elif remote_url is not None and _git_config_get(git_dir, vault_dir, "gewu.syncBranch") is None:
+            _run_git(git_dir, vault_dir, ["config", "gewu.syncBranch", "main"])
+            rc_cur, out_cur, _ = _run_git(git_dir, vault_dir, ["symbolic-ref", "--short", "HEAD"])
+            cur_br = out_cur.strip() if rc_cur == 0 else ""
+            if cur_br and cur_br != "main":
+                rc_exists, _, _ = _run_git(git_dir, vault_dir, ["show-ref", "--verify", "refs/heads/main"])
+                if rc_exists != 0:
+                    _run_git(git_dir, vault_dir, ["branch", "-M", "main"])
+
+        if auto_push is not None:
+            _run_git(git_dir, vault_dir, ["config", "gewu.autoPush", "true" if auto_push else "false"])
+            changed = True
+
+    info = get_vault_doc_remote(state_dir, vault_ref, vault_dir, fetch=False)
+    info["mode"] = mode
+    info["changed"] = changed
+    info["cleared"] = bool(clear)
+    info["included_scopes"] = ["dropzone", "journal"]
+    info["ignored_scopes"] = ["obsidian", "archives", "source", "trash"]
+    info["path_sealed"] = True
+    return info
+
+
+def _has_non_skeleton_untracked(git_dir: Path, vault_dir: Path) -> bool:
+    rc, out, _ = _run_git(git_dir, vault_dir, ["status", "--porcelain=v1", "-z", "-uall"])
+    if rc != 0:
+        return True
+    for tok in out.split("\0"):
+        if not tok or len(tok) < 4:
+            continue
+        xy = tok[:2]
+        rel = tok[3:].replace("\\", "/")
+        if xy == "??":
+            if Path(rel).name == ".gitkeep":
+                continue
+            return True
+        return True
+    return False
+
+
+def sync_vault_doc_remote(
+    *,
+    state_dir: Path,
+    vault_ref: str,
+    vault_dir: Path,
+    direction: str = "both",
+    bootstrap: str = "",
+    allow_rebase: bool = True,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Synchronize Vault DOC Git repository with its configured remote (fail-closed on conflict/unrelated history)."""
+    if direction not in ("both", "pull", "push"):
+        raise VaultStoreError("E_PARAM_INVALID", "direction 仅支持 both|pull|push", exit_code=1)
+    if bootstrap not in ("", "adopt-remote"):
+        raise VaultStoreError("E_PARAM_INVALID", "bootstrap 仅支持 adopt-remote", exit_code=1)
+
+    init_info = init_vault_git_repo(state_dir, vault_ref, vault_dir)
+    if not init_info.get("initialized"):
+        return {"synced": False, "status": "git_unavailable", "pulled": False, "pushed": False, "head_changed": False}
+    git_dir, mode = resolve_vault_git_dir(state_dir, vault_ref, vault_dir)
+    ensure_vault_git_exclude(git_dir)
+
+    raw_url = _git_config_get(git_dir, vault_dir, "remote.origin.url")
+    branch = _git_config_get(git_dir, vault_dir, "gewu.syncBranch") or "main"
+    auto_raw = _git_config_get(git_dir, vault_dir, "gewu.autoPush")
+    auto_push = True if auto_raw is None else (auto_raw.lower() in ("true", "1", "yes", "on"))
+    display_url = _sanitize_remote_url_for_display(raw_url)
+    if not raw_url:
+        return {
+            "synced": False,
+            "status": "skipped_unconfigured",
+            "configured": False,
+            "remote_url": None,
+            "branch": branch,
+            "auto_push": auto_push,
+            "pulled": False,
+            "pushed": False,
+            "head_changed": False,
+            "mode": mode,
+        }
+
+    _, pre_head_full, _ = _run_git(git_dir, vault_dir, ["rev-parse", "HEAD"])
+    pre_head_full = pre_head_full.strip()
+
+    rc_f, _, err_f = _run_git(git_dir, vault_dir, ["fetch", "--prune", "origin"], timeout=45, network=True)
+    if rc_f != 0:
+        st, msg = _classify_git_remote_error(err_f, rc_f)
+        return {
+            "synced": False,
+            "status": st,
+            "configured": True,
+            "remote_url": display_url,
+            "branch": branch,
+            "auto_push": auto_push,
+            "pulled": False,
+            "pushed": False,
+            "head_changed": False,
+            "mode": mode,
+            "detail": msg,
+        }
+
+    remote_ref = f"refs/remotes/origin/{branch}"
+    rc_rref, _, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--verify", remote_ref])
+    pulled = False
+    pushed = False
+
+    if rc_rref != 0:
+        # Remote branch does not exist yet (brand new empty GitHub repo)
+        if direction == "pull":
+            _, post_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
+            return {
+                "synced": True,
+                "status": "remote_empty",
+                "configured": True,
+                "remote_url": display_url,
+                "branch": branch,
+                "auto_push": auto_push,
+                "pulled": False,
+                "pushed": False,
+                "head_changed": False,
+                "head_short": post_head.strip() or None,
+                "mode": mode,
+            }
+        rc_p, _, err_p = _run_git(git_dir, vault_dir, ["push", "-u", "origin", f"HEAD:refs/heads/{branch}"], timeout=60, network=True)
+        if rc_p != 0:
+            st, msg = _classify_git_remote_error(err_p, rc_p)
+            return {
+                "synced": False,
+                "status": st,
+                "configured": True,
+                "remote_url": display_url,
+                "branch": branch,
+                "auto_push": auto_push,
+                "pulled": False,
+                "pushed": False,
+                "head_changed": False,
+                "mode": mode,
+                "detail": msg,
+            }
+        _, post_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
+        return {
+            "synced": True,
+            "status": "pushed",
+            "configured": True,
+            "remote_url": display_url,
+            "branch": branch,
+            "auto_push": auto_push,
+            "pulled": False,
+            "pushed": True,
+            "head_changed": False,
+            "head_short": post_head.strip() or None,
+            "ahead": 0,
+            "behind": 0,
+            "mode": mode,
+        }
+
+    # Remote branch exists: check common ancestor
+    rc_mb, _, _ = _run_git(git_dir, vault_dir, ["merge-base", "HEAD", remote_ref])
+    if rc_mb != 0:
+        if bootstrap == "adopt-remote":
+            rc_cnt, out_cnt, _ = _run_git(git_dir, vault_dir, ["rev-list", "--count", "HEAD"])
+            local_commits = int(out_cnt.strip()) if rc_cnt == 0 and out_cnt.strip().isdigit() else 999
+            has_extra_local = _has_non_skeleton_untracked(git_dir, vault_dir)
+            if (local_commits > 1 or has_extra_local) and not force:
+                return {
+                    "synced": False,
+                    "status": "unrelated_histories_local_nonempty",
+                    "requires_approval": True,
+                    "configured": True,
+                    "remote_url": display_url,
+                    "branch": branch,
+                    "auto_push": auto_push,
+                    "pulled": False,
+                    "pushed": False,
+                    "head_changed": False,
+                    "mode": mode,
+                    "detail": "本地存在额外提交或非占位未追踪文件；如需以远端历史覆盖对齐，请人工确认后加传 --force true",
+                }
+            # Cleanly adopt remote branch history & working tree (replacing initial skeleton)
+            rc_co, _, err_co = _run_git(git_dir, vault_dir, ["checkout", "-f", "-B", branch, remote_ref])
+            if rc_co != 0:
+                return {
+                    "synced": False,
+                    "status": "bootstrap_failed",
+                    "configured": True,
+                    "remote_url": display_url,
+                    "branch": branch,
+                    "auto_push": auto_push,
+                    "pulled": False,
+                    "pushed": False,
+                    "head_changed": False,
+                    "mode": mode,
+                    "detail": _sanitize_git_msg_part(err_co, "checkout_failed"),
+                }
+            _run_git(git_dir, vault_dir, ["branch", f"--set-upstream-to=origin/{branch}", branch])
+            ensure_vault_git_exclude(git_dir)
+            _, post_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
+            _, post_head_full, _ = _run_git(git_dir, vault_dir, ["rev-parse", "HEAD"])
+            return {
+                "synced": True,
+                "status": "bootstrapped_from_remote",
+                "configured": True,
+                "remote_url": display_url,
+                "branch": branch,
+                "auto_push": auto_push,
+                "pulled": True,
+                "pushed": False,
+                "head_changed": post_head_full.strip() != pre_head_full,
+                "head_short": post_head.strip() or None,
+                "ahead": 0,
+                "behind": 0,
+                "mode": mode,
+            }
+        return {
+            "synced": False,
+            "status": "unrelated_histories",
+            "requires_approval": True,
+            "configured": True,
+            "remote_url": display_url,
+            "branch": branch,
+            "auto_push": auto_push,
+            "pulled": False,
+            "pushed": False,
+            "head_changed": False,
+            "mode": mode,
+            "detail": "本地 DOC 仓与远端仓库无共同提交历史（典型场景：新建空 Vault 首次对接已有远端库）；请确认后使用 doc-sync --bootstrap adopt-remote 对齐远端内容，严禁强推覆盖",
+        }
+
+    # Common ancestor exists: compute ahead/behind
+    ahead, behind = 0, 0
+    rc_lr, out_lr, _ = _run_git(git_dir, vault_dir, ["rev-list", "--left-right", "--count", f"HEAD...{remote_ref}"])
+    if rc_lr == 0:
+        parts = out_lr.strip().split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            ahead, behind = int(parts[0]), int(parts[1])
+
+    if behind > 0 and (direction in ("pull", "both") or (direction == "push" and allow_rebase)):
+        if ahead == 0:
+            rc_mg, _, err_mg = _run_git(git_dir, vault_dir, ["merge", "--ff-only", remote_ref])
+            if rc_mg != 0:
+                return {
+                    "synced": False,
+                    "status": "diverged",
+                    "requires_approval": True,
+                    "configured": True,
+                    "remote_url": display_url,
+                    "branch": branch,
+                    "auto_push": auto_push,
+                    "pulled": False,
+                    "pushed": False,
+                    "head_changed": False,
+                    "ahead": ahead,
+                    "behind": behind,
+                    "mode": mode,
+                    "detail": _sanitize_git_msg_part(err_mg, "ff_only_failed"),
+                }
+            pulled = True
+        elif allow_rebase:
+            rc_rb, _, _err_rb = _run_git(git_dir, vault_dir, ["rebase", remote_ref])
+            if rc_rb != 0:
+                _run_git(git_dir, vault_dir, ["rebase", "--abort"])
+                return {
+                    "synced": False,
+                    "status": "diverged",
+                    "requires_approval": True,
+                    "configured": True,
+                    "remote_url": display_url,
+                    "branch": branch,
+                    "auto_push": auto_push,
+                    "pulled": False,
+                    "pushed": False,
+                    "head_changed": False,
+                    "ahead": ahead,
+                    "behind": behind,
+                    "mode": mode,
+                    "detail": "本地提交与远端存在同文件编辑冲突，已自动中止变基并保全双方现场，请人工协调后重试",
+                }
+            pulled = True
+        else:
+            return {
+                "synced": False,
+                "status": "diverged",
+                "requires_approval": True,
+                "configured": True,
+                "remote_url": display_url,
+                "branch": branch,
+                "auto_push": auto_push,
+                "pulled": False,
+                "pushed": False,
+                "head_changed": False,
+                "ahead": ahead,
+                "behind": behind,
+                "mode": mode,
+                "detail": "远端领先本地提交，请先执行 doc-sync --direction both 合并后再推送",
+            }
+
+    # Recompute ahead/behind after pull/rebase
+    rc_lr2, out_lr2, _ = _run_git(git_dir, vault_dir, ["rev-list", "--left-right", "--count", f"HEAD...{remote_ref}"])
+    if rc_lr2 == 0:
+        parts2 = out_lr2.strip().split()
+        if len(parts2) == 2 and parts2[0].isdigit() and parts2[1].isdigit():
+            ahead, behind = int(parts2[0]), int(parts2[1])
+
+    if direction in ("push", "both"):
+        if behind > 0:
+            return {
+                "synced": False,
+                "status": "diverged",
+                "requires_approval": True,
+                "configured": True,
+                "remote_url": display_url,
+                "branch": branch,
+                "auto_push": auto_push,
+                "pulled": pulled,
+                "pushed": False,
+                "head_changed": False,
+                "ahead": ahead,
+                "behind": behind,
+                "mode": mode,
+                "detail": "远端仍领先本地提交，已阻断推送以防覆盖",
+            }
+        if ahead > 0:
+            rc_p, _, err_p = _run_git(git_dir, vault_dir, ["push", "-u", "origin", f"HEAD:refs/heads/{branch}"], timeout=60, network=True)
+            if rc_p != 0:
+                st, msg = _classify_git_remote_error(err_p, rc_p)
+                _, post_head_full, _ = _run_git(git_dir, vault_dir, ["rev-parse", "HEAD"])
+                return {
+                    "synced": False,
+                    "status": st,
+                    "configured": True,
+                    "remote_url": display_url,
+                    "branch": branch,
+                    "auto_push": auto_push,
+                    "pulled": pulled,
+                    "pushed": False,
+                    "head_changed": post_head_full.strip() != pre_head_full,
+                    "ahead": ahead,
+                    "behind": behind,
+                    "mode": mode,
+                    "detail": msg,
+                }
+            pushed = True
+            ahead = 0
+
+    ensure_vault_git_exclude(git_dir)
+    _, post_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
+    _, post_head_full, _ = _run_git(git_dir, vault_dir, ["rev-parse", "HEAD"])
+    if pulled and pushed:
+        final_status = "pulled_and_pushed"
+    elif pushed:
+        final_status = "pushed"
+    elif pulled:
+        final_status = "pulled"
+    else:
+        final_status = "up_to_date"
+    return {
+        "synced": True,
+        "status": final_status,
+        "configured": True,
+        "remote_url": display_url,
+        "branch": branch,
+        "auto_push": auto_push,
+        "pulled": pulled,
+        "pushed": pushed,
+        "head_changed": post_head_full.strip() != pre_head_full,
+        "head_short": post_head.strip() or None,
+        "ahead": ahead,
+        "behind": behind,
+        "mode": mode,
+    }
+
+
 def inspect_vault_doc_git_state(
     state_dir: Path,
     vault_ref: str,
     vault_dir: Path,
     note_reg: Optional[Any] = None,
+    *,
+    fetch: bool = False,
 ) -> Dict[str, Any]:
     """Read-only inspection of DOC Git working tree classifying human/pending edits without leaking paths."""
     if not _git_available():
@@ -1291,6 +2032,9 @@ def inspect_vault_doc_git_state(
     parsed["mode"] = mode
     parsed["head_short"] = out_head.strip() or None
     parsed["clean"] = parsed["dirty_count"] == 0
+    parsed["included_scopes"] = ["dropzone", "journal"]
+    parsed["ignored_scopes"] = ["obsidian", "archives", "source", "trash"]
+    parsed["remote_sync"] = get_vault_doc_remote(state_dir, vault_ref, vault_dir, fetch=fetch)
     return parsed
 
 
@@ -1305,8 +2049,9 @@ def run_vault_doc_commit(
     phase: str = "post",
     file_count: int = 0,
     commit_mode: str = "standard",
+    push: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Stage & commit non-ignored Vault DOC changes cleanly without path leaks."""
+    """Stage & commit non-ignored Vault DOC changes cleanly without path leaks, optionally auto-pushing to remote."""
     init_info = init_vault_git_repo(state_dir, vault_ref, vault_dir)
     if not init_info.get("initialized"):
         return {"committed": False, "mode": init_info.get("mode"), "phase": phase}
@@ -1325,7 +2070,28 @@ def run_vault_doc_commit(
         return {"committed": False, "phase": phase, "error": "git_status_failed"}
     post_breakdown = _parse_doc_git_porcelain_z(out_st)
     staged_cnt = int(post_breakdown.get("dirty_count", 0) or int(breakdown.get("dirty_count", 0)))
+    remote_cfg = get_vault_doc_remote(state_dir, vault_ref, vault_dir, fetch=False)
+
+    def _maybe_push(did_commit: bool) -> Dict[str, Any]:
+        if phase == "pre":
+            return {"synced": False, "status": "skipped_pre_phase", "configured": remote_cfg["configured"], "auto_push": remote_cfg["auto_push"]}
+        if not remote_cfg["configured"]:
+            return {"synced": False, "status": "skipped_unconfigured", "configured": False, "auto_push": remote_cfg["auto_push"]}
+        if push is False:
+            return {"synced": False, "status": "skipped_by_flag", "configured": True, "remote_url": remote_cfg["remote_url"], "branch": remote_cfg["branch"], "auto_push": remote_cfg["auto_push"]}
+        should_push = (push is True) or (push is None and remote_cfg["auto_push"] and (did_commit or int(remote_cfg.get("ahead", 0)) > 0))
+        if not should_push:
+            return {"synced": False, "status": "skipped_auto_push_off" if not remote_cfg["auto_push"] else "up_to_date", "configured": True, "remote_url": remote_cfg["remote_url"], "branch": remote_cfg["branch"], "auto_push": remote_cfg["auto_push"]}
+        return sync_vault_doc_remote(
+            state_dir=state_dir,
+            vault_ref=vault_ref,
+            vault_dir=vault_dir,
+            direction="both",
+            allow_rebase=True,
+        )
+
     if staged_cnt == 0:
+        remote_sync = _maybe_push(False)
         _, out_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
         return {
             "committed": False,
@@ -1334,6 +2100,7 @@ def run_vault_doc_commit(
             "mode": mode,
             "commit_mode": commit_mode,
             "head_short": out_head.strip() or None,
+            "remote_sync": remote_sync,
         }
 
     safe_agent = _sanitize_git_msg_part(agent, "Agent")
@@ -1354,6 +2121,7 @@ def run_vault_doc_commit(
     rc_cm, _, err_cm = _run_git(git_dir, vault_dir, ["commit", "-m", msg])
     if rc_cm != 0:
         return {"committed": False, "phase": phase, "error": "git_commit_failed", "detail": _sanitize_git_msg_part(err_cm, "commit_err")}
+    remote_sync = _maybe_push(True)
     _, out_head, _ = _run_git(git_dir, vault_dir, ["rev-parse", "--short", "HEAD"])
     return {
         "committed": True,
@@ -1367,6 +2135,7 @@ def run_vault_doc_commit(
         "deleted_count": post_breakdown.get("deleted_count", 0),
         "renamed_count": post_breakdown.get("renamed_count", 0),
         "ticket_id": ticket_id or None,
+        "remote_sync": remote_sync,
     }
 
 
@@ -1375,8 +2144,10 @@ def doc_git_status_summary(
     vault_ref: str,
     vault_dir: Path,
     note_reg: Optional[Any] = None,
+    *,
+    fetch: bool = False,
 ) -> Dict[str, Any]:
-    info = inspect_vault_doc_git_state(state_dir, vault_ref, vault_dir, note_reg=note_reg)
+    info = inspect_vault_doc_git_state(state_dir, vault_ref, vault_dir, note_reg=note_reg, fetch=fetch)
     if not info.get("initialized"):
         return {"initialized": False, "mode": info.get("mode")}
     return {
@@ -1393,6 +2164,7 @@ def doc_git_status_summary(
         "change_origin": info.get("change_origin", "unknown"),
         "pending_changes_detected": int(info.get("dirty_count", 0)) > 0,
         "clean": bool(info.get("clean")),
+        "remote_sync": info.get("remote_sync"),
     }
 
 

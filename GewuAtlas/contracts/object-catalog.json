@@ -95,7 +95,11 @@
     {
       "files": [
         "scripts/facade/atlas_cli.py",
-        "scripts/facade/atlas_harness_state.py"
+        "scripts/facade/atlas_harness_state.py",
+        "scripts/facade/atlas_hot_kernel.py",
+        "scripts/facade/atlas_daemon.py",
+        "scripts/facade/atlas_mcp_server.py",
+        "scripts/checks/atlas_efficiency_daemon_selftest.py"
       ],
       "id": "atlas-cli-facade",
       "kind": "operator",
@@ -525,7 +529,9 @@
       "id": "atlas-change-engine",
       "kind": "operator",
       "files": [
-        "scripts/notes/atlas_change_engine.py"
+        "scripts/notes/atlas_change_engine.py",
+        "scripts/checks/atlas_doc_sync_selftest.py",
+        "scripts/checks/atlas_unidirectional_links_selftest.py"
       ],
       "references": [
         "rule-core-vfs",
@@ -663,38 +669,6 @@
       "kind": "operator",
       "files": [
         "scripts/storage/atlas_vault_context.py"
-      ],
-      "references": []
-    },
-    {
-      "id": "migration-test-atlas-approval-guards",
-      "kind": "operator",
-      "files": [
-        "tests/test_atlas_approval_guards.py"
-      ],
-      "references": []
-    },
-    {
-      "id": "migration-test-atlas-vault-context",
-      "kind": "operator",
-      "files": [
-        "tests/test_atlas_vault_context.py"
-      ],
-      "references": []
-    },
-    {
-      "id": "migration-test-gewu-atlas-domain",
-      "kind": "operator",
-      "files": [
-        "tests/test_gewu_atlas_domain.py"
-      ],
-      "references": []
-    },
-    {
-      "id": "migration-test-r1-remediation",
-      "kind": "operator",
-      "files": [
-        "tests/test_r1_remediation.py"
       ],
       "references": []
     },

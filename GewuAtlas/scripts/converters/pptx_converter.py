@@ -462,7 +462,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [presentation, ppt, pptx, slide]
-extracted_to: []
 ---
 
 # {doc_title}

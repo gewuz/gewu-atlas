@@ -16,6 +16,8 @@ import json
 import os
 import re
 import shutil
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -48,6 +50,7 @@ from storage.vault_kek_store import (
     aead_xchacha20_poly1305_decrypt,
     aead_xchacha20_poly1305_encrypt,
     hkdf_sha256,
+    registry_file_lock,
 )
 
 TRS_HANDLE_RE = re.compile(r"^trs_[0-9]{2,6}$")
@@ -74,12 +77,18 @@ class KekTrashRegistry:
     def __init__(self, app_id: str, enc_path: Path, master_kek: bytes) -> None:
         self.app_id = app_id
         self.enc_path = enc_path
+        self._thread_lock = threading.Lock()
         self._kek = hkdf_sha256(
             master_kek,
             salt=b"gewu-atlas-trash-salt-v1",
             info=f"{app_id}||trash-v1".encode("utf-8"),
             length=32,
         )
+
+    @contextmanager
+    def _container_lock(self, *, shared: bool = False):
+        with registry_file_lock(self.enc_path, shared=shared, thread_lock=self._thread_lock):
+            yield
 
     def _file_aad(self) -> bytes:
         return f"{self.app_id}||trash-container||v1".encode("utf-8")
@@ -111,6 +120,10 @@ class KekTrashRegistry:
         _atomic_write_0600(self.enc_path, blob)
 
     def sync_vault(self, vault_dir: Path, vault_ref: str) -> List[Dict[str, Any]]:
+        with self._container_lock():
+            return self._sync_vault_unlocked(vault_dir, vault_ref)
+
+    def _sync_vault_unlocked(self, vault_dir: Path, vault_ref: str) -> List[Dict[str, Any]]:
         trash_root = vault_dir / ".trash"
         if trash_root.is_symlink():
             raise VaultStoreError("E_HALT_SECURITY", "回收站目录禁止软链接", exit_code=2)
@@ -200,27 +213,28 @@ class KekTrashRegistry:
         kind: str,
         size_bytes: int,
     ) -> Dict[str, Any]:
-        doc = self._load_doc()
-        rows: List[Dict[str, Any]] = [r for r in doc.get("rows", []) if isinstance(r, dict)]
-        next_seq = int(doc.get("next_seq", 1))
-        tref = f"trs_{next_seq:02d}"
-        next_seq += 1
-        row = {
-            "vault_ref": vault_ref,
-            "trash_ref": tref,
-            "trash_rel": trash_rel,
-            "orig_rel": orig_rel,
-            "orig_zone": orig_zone,
-            "name": display_name,
-            "kind": kind,
-            "size_bytes": int(size_bytes),
-            "deleted_at": _now_iso(),
-        }
-        rows.append(row)
-        doc["rows"] = rows
-        doc["next_seq"] = next_seq
-        self._save_doc(doc)
-        return dict(row)
+        with self._container_lock():
+            doc = self._load_doc()
+            rows: List[Dict[str, Any]] = [r for r in doc.get("rows", []) if isinstance(r, dict)]
+            next_seq = int(doc.get("next_seq", 1))
+            tref = f"trs_{next_seq:02d}"
+            next_seq += 1
+            row = {
+                "vault_ref": vault_ref,
+                "trash_ref": tref,
+                "trash_rel": trash_rel,
+                "orig_rel": orig_rel,
+                "orig_zone": orig_zone,
+                "name": display_name,
+                "kind": kind,
+                "size_bytes": int(size_bytes),
+                "deleted_at": _now_iso(),
+            }
+            rows.append(row)
+            doc["rows"] = rows
+            doc["next_seq"] = next_seq
+            self._save_doc(doc)
+            return dict(row)
 
     def resolve_handle(self, vault_dir: Path, vault_ref: str, trash_ref: str) -> Dict[str, Any]:
         if not TRS_HANDLE_RE.fullmatch(trash_ref):

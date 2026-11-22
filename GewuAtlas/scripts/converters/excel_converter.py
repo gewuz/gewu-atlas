@@ -455,7 +455,6 @@ def generate_markdown(payload, original_file_name: str = None, out_path: Path = 
         f'sheet_count: {total_sheets}',
         f'total_rows: {total_rows}',
         f'sheets: {json.dumps(sheet_names, ensure_ascii=False)}',
-        'extracted_to: []',
         "---",
         ""
     ]

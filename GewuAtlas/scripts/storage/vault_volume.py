@@ -58,8 +58,6 @@ properties:
     displayName: 核心命题与定义
   formula.type_label:
     displayName: 认识论定性
-  source:
-    displayName: 事实溯源出处
   updated:
     displayName: 更新日期
   tags:
@@ -74,7 +72,7 @@ views:
       - file.name
       - formula.type_label
       - summary
-      - source
+      - tags
       - updated
     sort:
       - property: updated
@@ -285,6 +283,273 @@ updated: {today}
 - [[07-Tickets-工单协作台账.base]]
 """
 
+NOTE_TEMPLATES: Dict[str, str] = {
+    "01-Atomic-原子知识卡.md": """---
+doc_type: atomic
+title: "{{title}}"
+summary: "一句话核心命题或断言（≤ 200 字）"
+status: active
+type: SYN
+project_id: "ai-zone"
+tags: [Atom]
+aliases: []
+supersedes: ""
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+reviewed_by: human
+---
+
+# {{title}}
+
+> 核心命题：一句话提炼本卡唯一核心断言。
+
+## 1. 核心定义与断言 (Claim)
+
+用简洁、可验证的同行专家语态陈述核心命题。
+
+## 2. 依据与机理 (Evidence)
+
+- **关键机理**：说明因果链条、架构机制或定量数据。
+- **支撑事实**：引用原始文献、实验或生产实践证据。
+
+## 3. 边界与权衡 (Boundary)
+
+- **适用前提**：明确该结论成立的条件与范围。
+- **失效场景与反例**：列出退化边界或替代路径。
+
+## 参考来源与知识库索引
+
+- **一手文献与切片来源**：
+  - [[来源文献文件名|文献可读标题]]（`nte_XX`，关联切片：[[切片文件名|切片标题]] `nte_YY`）
+""",
+    "02-Artifact-成果研究报告.md": """---
+doc_type: artifact
+title: "{{title}}"
+summary: "一句话概括本篇研究报告的核心结论与交付价值（≤ 200 字）"
+status: active
+stage: draft
+type: SYN
+project_id: "ai-zone"
+tags: [Artifact, 研究报告]
+aliases: []
+processed: false
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+---
+
+# {{title}}
+
+> 核心结论：先给出可落地的顶层判断与关键数字，再展开机理与选型论证。
+
+## 1. 问题定义与背景边界
+
+明确研究范围、核心痛点与本文不讨论的边界。
+
+## 2. 底层机理与架构剖析
+
+拆解关键机制，必要时附带合规 Mermaid 结构图：
+
+```mermaid
+flowchart LR
+    A["输入条件"] --> B["核心机制"]
+    B --> C["输出与边界"]
+```
+
+## 3. 横向对比与可复算工程案例
+
+| 评估维度 | 方案 A | 方案 B |
+| :--- | :--- | :--- |
+| 适用场景 | ... | ... |
+| 关键代价 | ... | ... |
+
+### 可复算工程案例
+
+给出明确的假设口径与可复算的量化结果。
+
+## 4. 边界、风险与落地建议
+
+1. **红线与失效场景**：...
+2. **分阶段落地路径**：...
+
+## 参考来源与知识库索引
+
+- **课题总纲与主题地图**：
+  - [[Manifest-课题名|课题立项总纲]]（`nte_XX`）
+  - [[MOC-主题地图|主题内容地图]]（`nte_YY`）
+- **核心原子卡片（`22-Atomics`）**：
+  - [[Atom-卡片文件名|原子卡片可读标题]]（`nte_ZZ`）
+- **一手文献与切片来源（`21-Library` / `24-Slices`）**：
+  - [[文献文件名|文献可读标题]]（`nte_AA`，关联切片：[[切片文件名|切片标题]] `nte_BB`）
+""",
+    "03-MOC-主题内容地图.md": """---
+doc_type: moc
+title: "{{title}}"
+summary: "一句话概括本主题知识网络的全景脉络与核心议题（≤ 200 字）"
+status: active
+type: SYN
+read_status: unread
+project_id: "ai-zone"
+tags: [MOC]
+aliases: []
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+---
+
+# {{title}}
+
+## 宏观综述
+
+概述本主题域的核心问题、关键概念之间的拓扑关系及推荐阅读顺序。
+
+<!-- atlas:moc-index:start -->
+### Layer 1 核心拓扑与理论基石
+
+- [[Atom-卡片文件名|原子卡片标题]]：一句话核心命题。
+
+### Layer 2 工程机制与方法实践
+
+- [[Atom-卡片文件名|原子卡片标题]]：一句话核心命题。
+<!-- atlas:moc-index:end -->
+
+## 逻辑闭环评估与扩展研究建议
+
+- **当前闭环度**：说明现有卡片已覆盖哪些关键环节，尚缺哪些反例或一手数据。
+- **建议扩展方向**：
+  1. 方向一：...
+  2. 方向二：...
+""",
+    "04-Library-客观文献卷宗.md": """---
+doc_type: library
+title: "{{title}}"
+summary: "一句话概括原始文献的核心内容与权威出处（≤ 200 字）"
+status: active
+source_type: web
+channel: "manual"
+source_url: "https://example.com"
+processed: false
+project_id: "ai-zone"
+tags: [Library]
+aliases: []
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+---
+
+# {{title}}
+
+> 注意：`21-Library/` 属只读一手原料区，保持客观原文完整，不在此处混写主观二次结论。
+
+正文内容...
+""",
+    "05-Manifest-课题立项总纲.md": """---
+doc_type: manifest
+title: "{{title}}"
+summary: "一句话说明本课题域的研究目标与产出边界（≤ 200 字）"
+status: active
+default_mode: auto
+project_id: "prj-slug"
+private: false
+tags: [Manifest, Project]
+aliases: []
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+---
+
+# {{title}}
+
+## 1. 课题目标与核心问题
+
+- **核心问题**：...
+- **目标交付物**：...
+
+## 2. 研究范围与排除边界
+
+- **纳入范围**：...
+- **暂不纳入**：...
+
+## 3. 阶段里程碑与验收标准
+
+- [ ] 一手文献采集与切片入库
+- [ ] 核心原子知识卡蒸馏与 MOC 织网
+- [ ] 成果研报交付与验货闭环
+""",
+    "06-Journal-每日格物日记.md": """---
+doc_type: journal
+tags: [Journal]
+---
+
+# 人类记录
+
+在此记录当日个人随想、人工决策与待办事项（AI 严禁覆盖或改写本区）。
+
+# AI 编年记录
+
+- 系统自动追加当日知识库操作与关键变更摘要。
+""",
+    "07-Slip-书签批注卡.md": """---
+doc_type: slip
+title: "{{title}}"
+summary: "一句话概括书签批注或轻量跟进任务（≤ 200 字）"
+status: active
+slip_kind: note
+source_note: "[[来源笔记]]"
+project_id: "ai-zone"
+tags: [Slip]
+aliases: []
+updated: {{date:YYYY-MM-DD}}
+created_by: "human"
+updated_by: "human"
+---
+
+# {{title}}
+
+## 原文摘录与批注
+
+> 引用片段...
+
+批注思考与后续动作：...
+""",
+    "08-Workbench-工作台草稿.md": """---
+doc_type: workbench
+tags: [Workbench, Draft]
+---
+
+# {{title}}
+
+自由探索笔记、实验对比与报告初稿（成熟后经 `artifact-adopt` 采收入正式区）。
+""",
+}
+
+TEMPLATES_README = """# 格物志文档模板库 (`90-System/01-Templates`)
+
+本目录存放与 `GewuAtlas/dicts/metadata.yaml` 及 `atlas-style` 对齐的标准 Obsidian 文档模板，由 `./gewu atlas --action index-sync --ref <vlt_XX>` 维护（默认保护人工修改，仅 `--force true` 强制刷新）。
+
+## Obsidian 配置方法
+
+在 Obsidian 中打开 **设置 → 核心插件 → 模板（Templates）**，将「模板文件夹位置」设置为：
+
+```text
+90-System/01-Templates
+```
+
+## 模板清单
+
+| 模板文件 | 对应 `doc_type` | 适用分区 | 核心约束 |
+| :--- | :--- | :--- | :--- |
+| `01-Atomic-原子知识卡.md` | `atomic` | `22-Atomics/` | YAML 无 `sources` / `slices`，末章用写法 A 双链 + 句柄溯源 |
+| `02-Artifact-成果研究报告.md` | `artifact` | `10-Artifacts/` | YAML 无 `sources`，末章用写法 A 双链 + 句柄溯源 |
+| `03-MOC-主题内容地图.md` | `moc` | `23-MOC/` | 保留 `<!-- atlas:moc-index:start/end -->` 受控块 |
+| `04-Library-客观文献卷宗.md` | `library` | `21-Library/` | 只读原料，不回写 `extracted_to` |
+| `05-Manifest-课题立项总纲.md` | `manifest` | `30-Projects/<id>/` | 定义 `project_id`、`default_mode` 与 `private` 边界 |
+| `06-Journal-每日格物日记.md` | `journal` | `05-Journal/` | 极简 YAML（仅 `doc_type` 与 `tags`），严禁写入 `status` / `reviewed_by` |
+| `07-Slip-书签批注卡.md` | `slip` | `25-Slip/` | 轻量书签批注与随记卡片 |
+| `08-Workbench-工作台草稿.md` | `workbench` | `30-Workbench/` | 极简 YAML（仅 `doc_type` 与 `tags`），成熟后可采收入正式区 |
+"""
+
 
 def _today_iso() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d")
@@ -365,6 +630,33 @@ def sync_obsidian_bases_detailed(vault_dir: Path, overwrite: bool = False) -> Tu
 
 def sync_obsidian_bases(vault_dir: Path, overwrite: bool = False) -> List[str]:
     synced, _ = sync_obsidian_bases_detailed(vault_dir, overwrite=overwrite)
+    return synced
+
+
+def sync_obsidian_templates_detailed(vault_dir: Path, overwrite: bool = False) -> Tuple[List[str], List[str]]:
+    """Sync default 90-System/01-Templates/*.md & README.md without clobbering existing human edits unless overwrite=True."""
+    tpl_dir = vault_dir / "90-System" / "01-Templates"
+    for cur in (vault_dir / "90-System", tpl_dir):
+        if cur.exists() and cur.is_symlink():
+            raise VaultStoreError("E_HALT_SECURITY", "拒绝在包含符号链接的模板目录中同步模板", exit_code=2)
+    tpl_dir.mkdir(parents=True, exist_ok=True)
+    synced: List[str] = []
+    preserved: List[str] = []
+    items = list(NOTE_TEMPLATES.items()) + [("README.md", TEMPLATES_README)]
+    for fname, body in items:
+        target = tpl_dir / fname
+        if target.is_symlink():
+            raise VaultStoreError("E_HALT_SECURITY", f"拒绝覆盖符号链接模板文件: {fname}", exit_code=2)
+        if target.exists() and not overwrite:
+            preserved.append(fname)
+            continue
+        _write_noexec_text(target, body)
+        synced.append(fname)
+    return synced, preserved
+
+
+def sync_obsidian_templates(vault_dir: Path, overwrite: bool = False) -> List[str]:
+    synced, _ = sync_obsidian_templates_detailed(vault_dir, overwrite=overwrite)
     return synced
 
 
@@ -449,10 +741,12 @@ def init_vault_tree(
     base_files: List[str] = []
     if obsidian_base:
         base_files = sync_obsidian_bases(vault_dir)
+    template_files = sync_obsidian_templates(vault_dir)
     return {
         "rel_path": rel_path,
         "subdirs_created": len(subdirs),
         "obsidian_base_files": base_files,
+        "template_files": template_files,
     }
 
 
@@ -657,8 +951,12 @@ def trash_vault_tree(workspace_root: Path, rel_path: str, vault_id: str) -> str:
     src_dir = resolve_safe_vault_dir(workspace_root, rel_path)
     trash_root = workspace_root / "Volumes" / "GewuAtlas-data" / ".trash"
     trash_root.mkdir(parents=True, exist_ok=True)
-    name = f"{vault_id}.{_now_stamp()}"
+    stamp = _now_stamp()
+    name = f"{vault_id}.{stamp}"
     dest_dir = trash_root / name
+    if dest_dir.exists() or dest_dir.is_symlink():
+        name = f"{vault_id}.{stamp}.{secrets.token_hex(3)}"
+        dest_dir = trash_root / name
     if src_dir.is_dir():
         shutil.move(str(src_dir), str(dest_dir))
     return f"{VOLUME_REL_ROOT}/.trash/{name}"

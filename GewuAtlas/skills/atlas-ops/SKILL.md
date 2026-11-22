@@ -1,6 +1,6 @@
 ---
 name: atlas-ops
-description: Atlas 交付验货闸门、运维体检、防污染审计、冷归档与快照撤回（guard）：统一覆盖 delivery / health / schema / validate / links / doc-status / doc-commit / clean-attachments / archive-pack / trash-purge / retention-sweep / change-list / change-get / undo。
+description: Atlas 交付验货闸门、运维体检、自托管热内核守护进程（daemon start/status/stop）、防污染审计、冷归档、快照撤回与 DOC+GitHub 统一同步（guard）：统一覆盖 delivery / health / schema / validate / links / doc-status / doc-commit / doc-remote / doc-sync / clean-attachments / archive-pack / trash-purge / retention-sweep / change-list / change-get / undo / daemon。
 ---
 
 # 验货与运维 · 60分交付硬闸门、巡检同步与后悔药
@@ -16,10 +16,11 @@ description: Atlas 交付验货闸门、运维体检、防污染审计、冷归�
 | **交付验货闸门（60分硬底线）** | `delivery`（或 `verify`） | **一键检验四维硬指标**：① 工作区根目录净空、VFS 拓扑与课题 `Manifest` 台账完整性（15分，自动将本次检查记录与三舱位计数同步写入课题 `Manifest-*.md`）；② YAML Schema 与字典合规（15分）；③ 引用句柄（`--note_refs`）真实性、Mermaid 闭合与零断链（15分）；④ 审批边界（15分），并输出 40 分 Subagent/自评量表协议 |
 | 综合体检与 Schema 字典 | `health` / `schema` / `schema-list` | `[--note_ref]`、`[--doc_type]`、`[--strict true]` |
 | VFS 拓扑与双链扫描 | `validate` / `links` | `[--note_ref]`（发现断链可用 `note-link --mode fix` 修复） |
-| 人类删改识别与 DOC Git 提交 | `doc-status` / `doc-commit` | `--mode standard\|human-sync`、`[--force true]`、`[--reason]` |
+| 人类删改识别与 DOC+GitHub 统一同步 | `doc-status` / `doc-commit` / `doc-remote` / `doc-sync` | `doc-remote`: `[--remote_url] [--branch main] [--auto_push true\|false] [--git_layout in-vault\|detached] [--clear true]`；`doc-commit`: `--mode standard\|human-sync [--push true\|false] [--force true] [--reason]`（默认 `auto_push=true`）；`doc-sync`: `[--direction both\|pull\|push] [--bootstrap adopt-remote] [--force true]`（包含 `00-DropZone/`，排除 `.obsidian/`、`98-Archives/`、`source/` 与回收区） |
 | 孤岛附件清理与冷备封包 | `clean-attachments` / `archive-list` / `archive-pack` | `[--apply true]`、`[--month YYYYMM]`、`[--dry_run true]` |
 | 变更台账与 `chg_XX` 后悔药 | `change-list` / `change-get` / `undo` | `--change_id <chg_01>`，无损还原误改内容 |
 | 回收站与 30 天快照清扫 | `trash-purge` / `retention-sweep` | `[--days 30]`、`[--dry_run true]` |
+| **自托管热内核与可选 MCP** | 独立路由 `./gewu atlas daemon` | `daemon start [--idle-timeout 600] [--preload-vault vlt_01]` / `status` / `stop` / `restart`（多步任务开工拉起、收工停机，零宿主 MCP 依赖；支持 MCP 的宿主亦可用 `./gewu atlas mcp`） |
 
 ## 2. 双轨评估协同说明（算子 60 分 + Subagent/自评 40 分）
 

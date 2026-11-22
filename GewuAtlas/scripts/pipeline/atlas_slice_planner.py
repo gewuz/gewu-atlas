@@ -26,8 +26,8 @@ def scan_code_fence_intervals(lines):
     return intervals
 
 def sanitize_filename(title: str) -> str:
-    """清理文件名中的非法字符与多余空格，限制最长 80 字符。"""
-    clean = re.sub(r'[\\/*?:"<>|#`\[\]]', "", title).strip()
+    """清理文件名中的非法字符、撇号/逗号/模板花括号与多余空格，限制最长 80 字符。"""
+    clean = re.sub(r"""[\\/*?:"<>|#`\[\]',{}%]""", "", title).strip()
     clean = re.sub(r"\s+", "_", clean)
     return clean[:80] if clean else "未命名章节"
 

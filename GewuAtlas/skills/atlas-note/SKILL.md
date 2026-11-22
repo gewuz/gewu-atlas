@@ -1,6 +1,6 @@
 ---
 name: atlas-note
-description: Atlas 写与整理（note / vfs / artifact / journal / slip / trash）：创建、更新、规范化、跨区移动复制、统一软删与回收站恢复（trash）、工作台草稿采收与定稿（artifact-adopt/finalize）、固定双区日记记录（journal）与行内书签批注（slip）。
+description: Atlas 写与整理（note / note-patch / batch / daemon / vfs / artifact / journal / slip / trash）：创建、局部补丁更新（note-patch）、多步事务批处理（batch）、热内核加速（daemon start/stop）、跨区移动复制、统一软删与回收站恢复（trash）、工作台草稿采收与定稿（artifact-adopt/finalize）、固定双区日记记录（journal）与行内书签批注（slip）。
 ---
 
 # 写与整理 · 工作台创作、目录整理、成果定稿与日记书签
@@ -11,6 +11,10 @@ description: Atlas 写与整理（note / vfs / artifact / journal / slip / trash
   - 零散记录落 `20-AI-Zone/`；专向/多报告研究先经 `project-create --ref <vlt_XX> --title "<课题>" --agent <agent>`（或 `workbench-workspace`）分配 `ws-<agent>`，再用 `note-create --ref <vlt_XX> [--project_ref <prj_XX>] --zone workbench --subdir "ws-<agent>/drafts" --title "<标题>" --summary "<摘要>" --by "<agent>"` 创作。
   - **围墙红线**：严禁在工作区根目录自建研究/报告目录双份写盘，严禁 `--subdir 99-Assets`；`21-Library/` 原文只读。
 - **高频工具组合**：
+  - **局部补丁（首选改长文）与事务批处理**：
+    - 局部增量编辑：`note-patch --ref <vlt_XX> --note_ref <nte_XX> --old_text "<旧片段>" --new_text "<新片段>"`（或 `--section "## 结论" --content "<新正文>"` / `--mode append|prepend --content "<追加内容>"` / 原子多段补丁 `--ops_json '[{"op":"section","section":"## 结论","content":"..."},{"op":"append","content":"..."}]'`，每项必填 `"op": "replace|section|append|prepend"`；跨多卡批量替换可用 `--note_refs nte_01,nte_02` 配合 `--dry_run true` 预演，未命中标题时报错直接附大纲），自动保护 MOC/Workbench 受控块、原文只读与日记人类区，免整篇重写；
+    - 多步事务合批：`cat <<'EOF' | ./gewu atlas --action batch --ref <vlt_XX> [--project_ref <prj_XX>] --json-stdin`（传入 `{"steps":[{"id":"s1","action":"note-create","args":{...}}]}`，支持 `$s1.note_ref` / `$g.note_refs` 前序串联；全只读批次自动走共享锁零 DOC 票快路径，写批次合并锁、DOC 票、快照与末尾验货）；
+    - 多步任务热内核提速：开工 `./gewu atlas daemon start`（零宿主 MCP 依赖，自动加速所有常规算子），收工 `./gewu atlas daemon stop`（或空闲自动退出）。
   - **改写 / 升阶 / 废弃 / 格式化**：`note-update`、`note-promote`、`note-deprecate`、`note-format`；正文或表格内直接写 `[[nte_XX]]` 或 `[[标题]]` 自动解析双链，断链用 `note-link --mode fix` 批量修复。
   - **搬迁 / 复制 / 回收站**：`vfs-move`、`vfs-copy`；软删与恢复统一用 `./gewu atlas --action trash --ref <vlt_XX> --mode delete|list|restore`（`--note_ref <nte_XX>` 或 `--trash_ref <trs_XX>`）。
   - **工作台成果准入与定稿**：草稿入正式区用 `artifact-adopt --ref <vlt_XX> [--project_ref <prj_XX>] --note_ref <nte_XX> [--target_zone artifacts|library]`；经人类确认后调 `artifact-finalize`。

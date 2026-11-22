@@ -22,7 +22,8 @@
 边界：
 - **实战路书先行（`usecase-for-agent` 入口声明）**：接手复杂入库、萃取或专题研究前，**可先阅读 [GewuAtlas/usecase-for-agent/README.md](GewuAtlas/usecase-for-agent/README.md)**（或调 `./gewu.command atlas --action usecase --mode match --query "<任务词>"`）直接复用前人沉淀的「损耗→对策表」与「高分流水线」；若任务过程出现异常或人类要求记录本次心得，激活 [atlas-usecase](GewuAtlas/skills/atlas-usecase/SKILL.md) 调 `--action usecase --mode upsert` 沉淀经验。
 - **查库循证（`[QA_GATE]` 胶囊锁定）**：知识问答先调 `vault` + `note-search` + `note-get --note_refs ...` 批量实读正文后写成通顺分析文章并标注 `nte_XX` 句柄；未命中时诚实声明缺口，禁凭记忆瞎编或直接拼贴检索摘要。
-- **课题工作台围墙**：专向/多篇研究先调 `project-create --ref <vlt_XX> --title "<课题>" --agent <名>`（自动分配 `ws-<agent>` 工作台），外部文献经 `ingest --urls ... --auto_slice true` 归口；每次写算子出口自动顺风车检验根目录净空与双链闭合（`[DELIVERY_GATE]`）。
+- **课题工作台围墙**：专向/多篇研究先调 `project-create --ref <vlt_XX> --title "<课题>" --agent <名>`（自动分配 `ws-<agent>` 工作台），外部文献经 `ingest --urls ... --auto_slice true` 归口；每次写算子出口自动顺风车检验根目录净空与双链闭合（`[DELIVERY_GATE]`，草稿区走 $O(1)$ 脏卡增量校验，跨入正式区与 `guard --mode delivery` 走全库 60/60 硬验货）。
+- **热内核加速与低回合原语（免宿主 MCP 配置，开箱即用）**：L2/L3 多步任务建议开工 `./gewu.command atlas daemon start`（收工 `daemon stop`，空闲默认 10 分钟自动自毁，期间所有常规 `./gewu.command atlas --action ...` 自动复用内存热 KEK 与索引，未启动或沙箱受限自动降级直跑；支持 MCP 的宿主亦可选 `./gewu.command atlas mcp`）；局部改长文/MOC 优先用 `note-patch`（自动保护受控块），多步写优先用 `batch`（单锁合并闸门，支持 `$step_id.field` 串联），全局探查优先用 `project-brief`、`note-grep` 与 `note-get --outline true`。
 - **零物理路径**：Atlas 数据只经逻辑句柄访问，禁原生扫描 `Volumes/GewuAtlas-data`；向人类汇报标题与句柄。
 <!-- /forge:gewu-atlas:entry -->
 

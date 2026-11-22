@@ -101,19 +101,31 @@ def _strip_dot_slash(raw: str) -> str:
 
 
 def _candidate_resolved_paths(val: str) -> List[Path]:
-    """Resolve candidate paths relative to CWD and workspace root to defeat '..' and symlink escapes."""
-    if not val or any(ch in val for ch in ("*", "?", "\x00")):
+    """Resolve candidate paths relative to CWD and workspace root to defeat '..' and symlink escapes (including glob prefixes)."""
+    if not val or "\x00" in val:
         return []
+    probe_vals = [val]
+    if "*" in val or "?" in val:
+        sanitized = re.sub(r"[*?]+", "_wildcard_", val)
+        probe_vals = [sanitized]
+        prefix_parts: List[str] = []
+        for part in Path(val.replace("\\", "/")).parts:
+            if "*" in part or "?" in part:
+                break
+            prefix_parts.append(part)
+        if prefix_parts:
+            probe_vals.append(str(Path(*prefix_parts)))
     out: List[Path] = []
-    try:
-        p = Path(val)
-        if p.is_absolute():
-            out.append(p.resolve())
-        else:
-            out.append((Path.cwd() / p).resolve())
-            out.append((WS_ROOT / p).resolve())
-    except OSError:
-        return []
+    for pv in probe_vals:
+        try:
+            p = Path(pv)
+            if p.is_absolute():
+                out.append(p.resolve())
+            else:
+                out.append((Path.cwd() / p).resolve())
+                out.append((WS_ROOT / p).resolve())
+        except OSError:
+            continue
     return out
 
 
@@ -268,6 +280,28 @@ def _has_approved_sys_ticket(ws_root: Path, rel_path: str) -> bool:
     return False
 
 
+_BASH_SYSTEM_WRITE_PATTERNS = (
+    re.compile(
+        r"""(?:>>?|\btee\b(?:\s+-a)?)\s*['"]?((?:\./)?(?:(?:GewuAtlas|GewuForge|GewuTicket|GewuLog)[\\/](?:AGENTS\.md|bootstrap\.py|gewu|(?:rules|contracts|skills|scripts|dicts|templates|tests)[\\/][^\s'";|&)]+)|AGENTS\.md|gewu|bootstrap\.py))"""
+    ),
+    re.compile(
+        r"""\b(?:sed\s+-i(?:\s+['"][^'"]*['"])?(?:\s+-e\s+['"][^'"]*['"]|\s+\S+)?|perl\s+-[pi]+(?:\s+-e\s+['"][^'"]*['"]|\s+\S+)?|rm(?:\s+-[rfv]+)*|cp(?:\s+-[rfpv]+)*\s+\S+|mv(?:\s+-[fv]+)*\s+\S+|chmod\s+\S+|dd\s+[^\n;|&]*\bof=)\s*['"]?((?:\./)?(?:(?:GewuAtlas|GewuForge|GewuTicket|GewuLog)[\\/](?:AGENTS\.md|bootstrap\.py|gewu|(?:rules|contracts|skills|scripts|dicts|templates|tests)[\\/][^\s'";|&)]+)|AGENTS\.md|gewu|bootstrap\.py))"""
+    ),
+)
+
+
+def _extract_bash_system_write_targets(cmd: str) -> List[str]:
+    if not cmd:
+        return []
+    targets: List[str] = []
+    for pat in _BASH_SYSTEM_WRITE_PATTERNS:
+        for m in pat.finditer(cmd):
+            t = m.group(1).strip().strip("'\"")
+            if t and t not in targets:
+                targets.append(t)
+    return targets
+
+
 def inspect_tool_call(tool_name: str, tool_input: Dict[str, Any]) -> Optional[str]:
     """Return block reason if tool call targets protected core/state, Git history, or un-ticketed system edits."""
     name = tool_name.strip().lower()
@@ -284,6 +318,14 @@ def inspect_tool_call(tool_name: str, tool_input: Dict[str, Any]) -> Optional[st
         for pat in DANGEROUS_BASH_PATTERNS:
             if pat.search(cmd):
                 return "禁止通过原生 Shell/sqlite3 直接探查隐藏核心或加密状态库"
+        for b_target in _extract_bash_system_write_targets(cmd):
+            ws_root, rel_to_ws = _resolve_sys_ticket_root(b_target)
+            if ws_root is not None and _is_controlled_system_target(rel_to_ws):
+                if not _has_approved_sys_ticket(ws_root, rel_to_ws):
+                    return (
+                        f"通过 Shell 修改受控系统文件（{rel_to_ws}）须先在 GewuTicket 开立 SYS 工单并获人类 pre 审批进入 in_progress："
+                        "./gewu.command ticket --action out --volume ./Volumes/GewuTicket-data --category SYS --from <Agent> --key <task-key> --title \"<摘要>\" --write-scope \"<作用域>\""
+                    )
     if name in WRITE_TOOL_NAMES:
         for key in WRITE_PATH_KEYS:
             val = str(tool_input.get(key, ""))

@@ -548,7 +548,6 @@ def artifact_adopt(
         tags = [default_tag]
 
     actor = (by_actor or "").strip() or "ai"
-    art_sources = _derive_artifact_sources(body, title, meta.get("sources")) if tz == "artifacts" else []
     if has_fm:
         rendered = replace_frontmatter_field(raw, "doc_type", doc_type)
         rendered = replace_frontmatter_field(rendered, "title", f'"{fm_scalar(title)}"')
@@ -558,16 +557,13 @@ def artifact_adopt(
             rendered = replace_frontmatter_field(rendered, "stage", "draft")
             if not str(meta.get("type") or "").strip():
                 rendered = replace_frontmatter_field(rendered, "type", "SYN")
-            if not meta.get("sources"):
-                rendered = replace_frontmatter_field(rendered, "sources", json.dumps(art_sources, ensure_ascii=False))
+            rendered = _drop_frontmatter_key(rendered, "sources")
         else:
             rendered = _drop_frontmatter_key(rendered, "stage")
         rendered = replace_frontmatter_field(rendered, "project_id", f'"{fm_scalar(dom["project_id"])}"')
         rendered = replace_frontmatter_field(rendered, "updated", _today())
         if "processed" not in meta:
             rendered = replace_frontmatter_field(rendered, "processed", "false")
-        if "extracted_to" not in meta:
-            rendered = replace_frontmatter_field(rendered, "extracted_to", "[]")
         if not meta.get("tags"):
             rendered = replace_frontmatter_field(rendered, "tags", f'["{default_tag}"]')
     else:
@@ -584,14 +580,22 @@ def artifact_adopt(
         if tz == "artifacts":
             rendered = replace_frontmatter_field(rendered, "stage", "draft")
             rendered = replace_frontmatter_field(rendered, "type", "SYN")
-            rendered = replace_frontmatter_field(rendered, "sources", json.dumps(art_sources, ensure_ascii=False))
         rendered = replace_frontmatter_field(rendered, "processed", "false")
-        rendered = replace_frontmatter_field(rendered, "extracted_to", "[]")
         rendered = replace_frontmatter_field(rendered, "project_id", f'"{fm_scalar(dom["project_id"])}"')
 
     if not str(meta.get("created_by") or "").strip():
         rendered = replace_frontmatter_field(rendered, "created_by", f'"{fm_scalar(actor)}"')
     rendered = replace_frontmatter_field(rendered, "updated_by", f'"{fm_scalar(actor)}"')
+    if "[[" in rendered:
+        from notes.atlas_wikilink_tools import build_vault_link_index, normalize_inline_wikilinks
+
+        pre_rels = _scan_vault_markdowns(vault_dir)
+        pre_map = note_reg.list_vault_handles(vault_ref)
+        if set(pre_rels) != set(pre_map.keys()):
+            pre_map = note_reg.sync_paths(vault_ref, pre_rels)
+        if pre_map:
+            idx = build_vault_link_index(vault_dir, pre_map)
+            rendered, _ = normalize_inline_wikilinks(rendered, source_rel=new_rel, index=idx)
 
     fmeta, _, _ = extract_frontmatter(rendered)
     errs = validate_note_meta(fmeta, rel_path=new_rel)
@@ -681,7 +685,6 @@ def artifact_finalize(
     cur_summary = str(meta.get("summary") or "").strip()
     actor = (by_actor or "").strip() or str(meta.get("updated_by") or "").strip() or "ai"
     reviewer = "human" if actor.lower() == "human" else (str(meta.get("reviewed_by") or "").strip() or "ai")
-    art_sources = _derive_artifact_sources(fbody, cur_title, meta.get("sources"))
 
     rendered = replace_frontmatter_field(raw, "doc_type", "artifact")
     if not cur_summary or cur_summary == cur_title:
@@ -693,16 +696,23 @@ def artifact_finalize(
     rendered = replace_frontmatter_field(rendered, "updated", _today())
     if not str(meta.get("type") or "").strip():
         rendered = replace_frontmatter_field(rendered, "type", "SYN")
-    if not meta.get("sources"):
-        rendered = replace_frontmatter_field(rendered, "sources", json.dumps(art_sources, ensure_ascii=False))
+    rendered = _drop_frontmatter_key(rendered, "sources")
     if "processed" not in meta:
         rendered = replace_frontmatter_field(rendered, "processed", "false")
-    if "extracted_to" not in meta:
-        rendered = replace_frontmatter_field(rendered, "extracted_to", "[]")
     if not str(meta.get("created_by") or "").strip():
         rendered = replace_frontmatter_field(rendered, "created_by", f'"{fm_scalar(actor)}"')
     rendered = replace_frontmatter_field(rendered, "updated_by", f'"{fm_scalar(actor)}"')
     rendered = replace_frontmatter_field(rendered, "reviewed_by", reviewer)
+    if "[[" in rendered:
+        from notes.atlas_wikilink_tools import build_vault_link_index, normalize_inline_wikilinks
+
+        pre_rels = _scan_vault_markdowns(vault_dir)
+        pre_map = note_reg.list_vault_handles(vault_ref)
+        if set(pre_rels) != set(pre_map.keys()):
+            pre_map = note_reg.sync_paths(vault_ref, pre_rels)
+        if pre_map:
+            idx = build_vault_link_index(vault_dir, pre_map)
+            rendered, _ = normalize_inline_wikilinks(rendered, source_rel=rel, index=idx)
     fmeta, _, _ = extract_frontmatter(rendered)
     errs = validate_note_meta(fmeta, rel_path=rel)
     if errs:

@@ -14,6 +14,7 @@ Ports 116-gwf-v2-R6 `search/{terms,bm25,cache,graph,formatter,cli}.py`:
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -53,6 +54,29 @@ _FM_LINE = re.compile(r"(?m)^---[ \t]*$")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _SENT_END = "。！？；!?;"
+_REF_SECTION_SPLIT_RE = re.compile(r"(?m)^#{2,3}\s*(?:参考来源与知识库索引|参考来源|溯源与参考来源|知识库关联卡片)\b")
+_REF_HEADING_PREFIX_RE = re.compile(
+    r"^(?:(?:\d+[\.\、\s]+|[一二三四五六七八九十]+[\、\.\s]+))?(?:参考来源与知识库索引|参考来源|溯源与参考来源|知识库关联卡片)\b"
+)
+_WIKILINK_PIPE_TARGET_RE = re.compile(r"\[\[[^\]|]+\|([^\]]+)\]\]")
+
+
+def _split_reference_footer(body: str) -> Tuple[str, str]:
+    txt = body or ""
+    m = _REF_SECTION_SPLIT_RE.search(txt)
+    if not m:
+        return txt, ""
+    return txt[: m.start()].rstrip(), txt[m.start() :]
+
+
+def _clean_reference_footer_for_bm25(footer: str) -> str:
+    if not footer:
+        return ""
+    return _WIKILINK_PIPE_TARGET_RE.sub(r"\1", footer)
+
+
+def _is_reference_heading(heading: str) -> bool:
+    return bool(_REF_HEADING_PREFIX_RE.match((heading or "").strip()))
 
 ALLOWED_FIELDS = (
     "vault_ref",
@@ -160,10 +184,74 @@ def _cache_key(kek: bytes, app_id: str, vault_ref: str) -> bytes:
     return hkdf_sha256(kek, b"gewu-atlas-search-cache/v1", f"{app_id}|{vault_ref}".encode("utf-8"))
 
 
+# Opt-in process RAM hot-cache for BM25 corpus (enabled ONLY by AtlasHotKernel).
+_HOT_SEARCH_ENABLED = False
+_HOT_SEARCH_MAX_ENTRIES = 8
+_HOT_SEARCH_CACHE: Dict[str, Tuple[int, int, bytes, Dict[str, Dict[str, Any]]]] = {}
+_HOT_SEARCH_HITS = 0
+_HOT_SEARCH_MISSES = 0
+
+
+def set_hot_cache_enabled(enabled: bool, *, max_entries: int = 8) -> None:
+    global _HOT_SEARCH_ENABLED, _HOT_SEARCH_MAX_ENTRIES
+    _HOT_SEARCH_ENABLED = bool(enabled)
+    _HOT_SEARCH_MAX_ENTRIES = max(1, int(max_entries))
+    if not _HOT_SEARCH_ENABLED:
+        clear_hot_cache()
+
+
+def clear_hot_cache() -> None:
+    global _HOT_SEARCH_HITS, _HOT_SEARCH_MISSES
+    _HOT_SEARCH_CACHE.clear()
+    _HOT_SEARCH_HITS = 0
+    _HOT_SEARCH_MISSES = 0
+
+
+def get_hot_cache_stats() -> Dict[str, Any]:
+    return {
+        "enabled": _HOT_SEARCH_ENABLED,
+        "cached_vaults": len(_HOT_SEARCH_CACHE),
+        "hits": _HOT_SEARCH_HITS,
+        "misses": _HOT_SEARCH_MISSES,
+    }
+
+
+def _hot_search_put(c_key: str, mtime_ns: int, size: int, k_dig: bytes, docs: Dict[str, Dict[str, Any]]) -> None:
+    if c_key in _HOT_SEARCH_CACHE:
+        _HOT_SEARCH_CACHE.pop(c_key, None)
+    elif len(_HOT_SEARCH_CACHE) >= _HOT_SEARCH_MAX_ENTRIES:
+        oldest = next(iter(_HOT_SEARCH_CACHE))
+        _HOT_SEARCH_CACHE.pop(oldest, None)
+    _HOT_SEARCH_CACHE[c_key] = (mtime_ns, size, k_dig, copy.deepcopy(docs))
+
+
 def _load_cache(cache_file: Path, key: bytes) -> Dict[str, Dict[str, Any]]:
+    global _HOT_SEARCH_HITS, _HOT_SEARCH_MISSES
     if not cache_file.exists():
+        if _HOT_SEARCH_ENABLED:
+            _HOT_SEARCH_CACHE.pop(str(cache_file), None)
         return {}
     _check_no_symlink(cache_file)
+    c_key = str(cache_file)
+    k_dig = b""
+    st_mtime = -1
+    st_size = -1
+    if _HOT_SEARCH_ENABLED:
+        import hashlib as _hashlib
+
+        k_dig = _hashlib.sha256(key).digest()
+        try:
+            st = cache_file.stat()
+            st_mtime = int(st.st_mtime_ns)
+            st_size = int(st.st_size)
+            hit = _HOT_SEARCH_CACHE.get(c_key)
+            if hit is not None and hit[0] == st_mtime and hit[1] == st_size and hit[2] == k_dig:
+                _HOT_SEARCH_HITS += 1
+                _hot_search_put(c_key, st_mtime, st_size, k_dig, hit[3])
+                return copy.deepcopy(hit[3])
+            _HOT_SEARCH_MISSES += 1
+        except OSError:
+            pass
     try:
         blob = cache_file.read_bytes()
         if len(blob) < len(_CACHE_MAGIC) + _NONCE_LEN + _TAG_LEN + 1 or blob[:5] != _CACHE_MAGIC:
@@ -174,7 +262,10 @@ def _load_cache(cache_file: Path, key: bytes) -> Dict[str, Dict[str, Any]]:
         pt = aead_xchacha20_poly1305_decrypt(key, nonce, ct, b"search-cache", tag)
         doc = json.loads(zlib.decompress(pt).decode("utf-8"))
         if isinstance(doc, dict) and doc.get("v") == _CACHE_VERSION and isinstance(doc.get("docs"), dict):
-            return doc["docs"]
+            docs = doc["docs"]
+            if _HOT_SEARCH_ENABLED and st_mtime >= 0:
+                _hot_search_put(c_key, st_mtime, st_size, k_dig, docs)
+            return docs
     except Exception:
         return {}
     return {}
@@ -189,6 +280,14 @@ def _save_cache(cache_file: Path, key: bytes, docs: Dict[str, Dict[str, Any]]) -
     )
     ct, tag = aead_xchacha20_poly1305_encrypt(key, nonce, payload, b"search-cache")
     _atomic_write_0600(cache_file, _CACHE_MAGIC + nonce + ct + tag)
+    if _HOT_SEARCH_ENABLED:
+        import hashlib as _hashlib
+
+        try:
+            st = cache_file.stat()
+            _hot_search_put(str(cache_file), int(st.st_mtime_ns), int(st.st_size), _hashlib.sha256(key).digest(), docs)
+        except OSError:
+            pass
 
 
 def _reconcile_docs(
@@ -521,25 +620,35 @@ def extract_kwic_and_section(raw_text: str, terms: List[str], width: int = 160) 
     while body_start < len(raw_text) and raw_text[body_start] in "\r\n":
         body_start += 1
 
-    pos = _first_hit(lowered, terms_l, body_start, len(raw_text))
-    in_body = pos >= 0
-    if not in_body:
-        pos = _first_hit(lowered, terms_l, 0, len(raw_text))
-    if in_body and len(terms_l) > 1:
-        p2 = _density_pick(lowered, terms_l, body_start, len(raw_text))
+    ref_m = _REF_SECTION_SPLIT_RE.search(raw_text, body_start)
+    core_end = ref_m.start() if (ref_m and ref_m.start() > body_start) else len(raw_text)
+
+    pos = _first_hit(lowered, terms_l, body_start, core_end)
+    in_core = pos >= 0
+    if in_core and len(terms_l) > 1:
+        p2 = _density_pick(lowered, terms_l, body_start, core_end)
         if p2 >= 0:
             pos = p2
+    if not in_core:
+        pos = _first_hit(lowered, terms_l, core_end, len(raw_text))
+        if pos >= 0 and len(terms_l) > 1:
+            p2 = _density_pick(lowered, terms_l, core_end, len(raw_text))
+            if p2 >= 0:
+                pos = p2
+    if pos < 0:
+        pos = _first_hit(lowered, terms_l, 0, len(raw_text))
     if pos < 0:
         pos = body_start if body_start < len(raw_text) else 0
 
     half = max(20, eff_width // 2)
     lo = max(body_start if pos >= body_start else 0, pos - half)
-    hi = min(len(raw_text), pos + half)
+    hi_bound = core_end if (in_core and pos < core_end) else len(raw_text)
+    hi = min(hi_bound, pos + half)
     s_idx = _align_left(raw_text, lo, pos)
     e_idx = _align_right(raw_text, pos, hi)
     snip = " ".join(raw_text[s_idx:e_idx].split())
     if not snip:
-        snip = " ".join(raw_text[body_start:].split())[:eff_width]
+        snip = " ".join(raw_text[body_start:core_end].split())[:eff_width]
     if len(snip) > eff_width + 20:
         snip = snip[:eff_width].rstrip() + "…"
     section = _section_at_offset(raw_text, fm_end, pos)
@@ -554,8 +663,8 @@ def extract_passage_and_section(
     max_chars: int = 1200,
 ) -> Tuple[str, str, bool]:
     """Extract doc_type-aware passage around the densest query hit:
-    - atomic/slip -> full note body (cap 4000 chars)
-    - moc/artifact -> complete matched Markdown section (cap 2000 chars)
+    - atomic/slip -> full note body excluding trailing reference index chapter (cap 4000 chars)
+    - moc/artifact -> complete matched Markdown section, prioritizing prose chapters over reference index (cap 2000 chars)
     - other docs (library/slice/workbench/etc.) -> complete matched paragraph (cap max_chars, default 1200)
     """
     fm_end = _frontmatter_end(raw_text)
@@ -566,13 +675,15 @@ def extract_passage_and_section(
     dt = (doc_type or "").strip().lower()
     terms_l = list(dict.fromkeys(t.lower() for t in terms if t))
 
-    # 1. Atomic & Slip: return full body so definition/mechanism/boundary stay intact
+    # 1. Atomic & Slip: return full core body (excluding trailing reference index chapter) so definition/mechanism/boundary stay clean
     if dt in ("atomic", "slip"):
+        core_body, _ = _split_reference_footer(body)
+        eff_body = core_body.strip() or body
         cap = max(2000, int(max_chars or 1200), 4000)
-        if len(body) <= cap:
-            return body, "", False
-        cut = body[:cap].rfind("\n\n")
-        chunk = (body[:cut] if cut > cap // 2 else body[:cap]).rstrip() + "…"
+        if len(eff_body) <= cap:
+            return eff_body, "", False
+        cut = eff_body[:cap].rfind("\n\n")
+        chunk = (eff_body[:cut] if cut > cap // 2 else eff_body[:cap]).rstrip() + "…"
         return chunk, "", True
 
     sections: List[Tuple[str, str]] = []
@@ -608,13 +719,15 @@ def extract_passage_and_section(
         sections = [("", body)]
 
     best_idx = 0
-    best_key = (-1, -1)
-    for idx, (_hd, txt) in enumerate(sections):
+    best_key = (-1, -1, -1)
+    for idx, (hd, txt) in enumerate(sections):
         low = txt.lower()
         distinct = sum(1 for t in terms_l if t in low)
         total = sum(low.count(t) for t in terms_l)
-        if (distinct, total) > best_key:
-            best_key = (distinct, total)
+        non_ref_hit = 1 if (distinct > 0 and not _is_reference_heading(hd)) else 0
+        cand_key = (non_ref_hit, distinct, total)
+        if cand_key > best_key:
+            best_key = cand_key
             best_idx = idx
 
     heading, sec_txt = sections[best_idx]
@@ -848,7 +961,7 @@ def note_search(
         if stg == "draft" and exclude_draft and z_want != "workbench":
             return False
         if not include_private:
-            if d["meta"].get("private") is True:
+            if d["meta"].get("private") is True or zone == "journal" or rel.startswith("05-Journal/"):
                 return False
             parts = Path(rel).parts
             if len(parts) >= 2 and parts[0] == "30-Projects" and parts[1] in private_projects:
@@ -882,19 +995,24 @@ def note_search(
     if not scoped:
         return [], rels
 
-    # Weighted BM25 over scoped pool
+    # Weighted BM25 over scoped pool (excluding trailing reference index chapter from dl to avoid slice-slug dilution)
     fields_map: Dict[str, Dict[str, str]] = {}
+    ref_footer_map: Dict[str, str] = {}
     lengths: Dict[str, int] = {}
     for rel, d in scoped.items():
         m = d["meta"]
+        raw_body = str(d.get("body") or "")
+        core_body, ref_footer = _split_reference_footer(raw_body)
         fm = {
             "title": str(m.get("title") or Path(rel).stem),
             "aliases": " ".join(m.get("aliases") or []),
             "summary": str(m.get("summary") or ""),
             "tags": " ".join(m.get("tags") or []),
-            "body": str(d.get("body") or ""),
+            "body": core_body if core_body.strip() else raw_body,
         }
         fields_map[rel] = fm
+        if ref_footer:
+            ref_footer_map[rel] = _clean_reference_footer_for_bm25(ref_footer).lower()
         lengths[rel] = sum(len(v) for v in fm.values())
 
     n_docs = len(scoped)
@@ -904,9 +1022,12 @@ def note_search(
 
     for rel, fm in fields_map.items():
         lowered = {k: v.lower() for k, v in fm.items()}
+        ref_low = ref_footer_map.get(rel, "")
         tf: Dict[str, float] = {}
         for t in terms_l:
             freq = sum(BM25_WEIGHTS[k] * txt.count(t) for k, txt in lowered.items() if txt)
+            if ref_low:
+                freq += 0.2 * ref_low.count(t)
             if freq > 0:
                 tf[t] = freq
                 df[t] += 1
@@ -966,6 +1087,9 @@ def note_search(
                 "vault_ref": vault_ref,
                 "note_ref": mapping[rel],
                 "title": title_val,
+                "score": norm_score,
+                "score_raw": round(total_s, 4),
+                "bm25_score": round(bscore, 4),
                 "doc_type": base_pub.get("doc_type") or "",
                 "summary": summary_val or "",
                 "updated": base_pub.get("updated") or "",
@@ -991,6 +1115,8 @@ def note_search(
                 "note_ref": mapping[rel],
                 "title": title_val,
                 "score": norm_score,
+                "score_raw": round(total_s, 4),
+                "bm25_score": round(bscore, 4),
                 "doc_type": base_pub.get("doc_type") or "",
                 "updated": base_pub.get("updated") or "",
                 "status": base_pub.get("status") or "",
@@ -1020,6 +1146,8 @@ def note_search(
                 "note_ref": mapping[rel],
                 "title": title_val,
                 "score": norm_score,
+                "score_raw": round(total_s, 4),
+                "bm25_score": round(bscore, 4),
                 "doc_type": base_pub.get("doc_type") or "",
                 "summary": summary_val or "",
                 "updated": base_pub.get("updated") or "",
@@ -1212,4 +1340,10 @@ def note_search_all_vaults(
             str(item.get("note_ref", "")),
         )
     )
+    if merged_hits:
+        global_max = max((float(item.get(score_key, 0.0)) for item in merged_hits), default=0.0)
+        if global_max > 0:
+            for item in merged_hits:
+                raw_v = float(item.get(score_key, 0.0))
+                item["score"] = round((raw_v / global_max) * 100.0, 2)
     return merged_hits[: max(1, top_k)], sealed

@@ -24,9 +24,6 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-if sys.platform != "win32":
-    import fcntl
-
 from storage.vault_kek_store import (
     VaultStoreError,
     _atomic_write_0600,
@@ -34,6 +31,7 @@ from storage.vault_kek_store import (
     aead_xchacha20_poly1305_decrypt,
     aead_xchacha20_poly1305_encrypt,
     hkdf_sha256,
+    registry_file_lock,
 )
 
 NOTE_HANDLE_RE = re.compile(r"^nte_[0-9]{2,6}$")
@@ -78,23 +76,12 @@ class KekNoteRegistry:
         self._mem_cache: Optional[Tuple[int, int, List[Dict[str, Any]]]] = None
         # Raw encrypted row blobs keyed by (vault_ref, note_ref) for O(delta) incremental re-encryption on save
         self._raw_enc_rows: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None
+        self._raw_enc_sig: Optional[Tuple[int, int]] = None
 
     @contextmanager
     def _container_lock(self):
-        self.enc_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = self.enc_path.with_suffix(".lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with self._thread_lock:
-            try:
-                if sys.platform != "win32":
-                    fcntl.flock(fd, fcntl.LOCK_EX)
-                yield
-            finally:
-                try:
-                    if sys.platform != "win32":
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
+        with registry_file_lock(self.enc_path, thread_lock=self._thread_lock):
+            yield
 
     def _row_aad(self, vault_ref: str, note_ref: str, key_version: int) -> bytes:
         return f"{self.app_id}||notes||{vault_ref}||{note_ref}||v{key_version}".encode("utf-8")
@@ -210,22 +197,27 @@ class KekNoteRegistry:
         if not self.enc_path.exists():
             self._mem_cache = None
             self._raw_enc_rows = {}
+            self._raw_enc_sig = None
             return []
         st = self.enc_path.stat()
-        if self._mem_cache is not None and self._mem_cache[0] == int(st.st_mtime_ns) and self._mem_cache[1] == int(st.st_size):
+        cur_sig = (int(st.st_mtime_ns), int(st.st_size))
+        if self._mem_cache is not None and self._mem_cache[0] == cur_sig[0] and self._mem_cache[1] == cur_sig[1]:
             return [dict(r) for r in self._mem_cache[2]]
 
+        # Disk container changed externally: invalidate any cached raw encrypted rows immediately.
+        self._raw_enc_rows = None
+        self._raw_enc_sig = None
         enc_bytes = self.enc_path.read_bytes()
         enc_sha = hashlib.sha256(enc_bytes).hexdigest()
         mirrored = self._try_load_idx_mirror(enc_sha)
         if mirrored is not None:
-            self._mem_cache = (int(st.st_mtime_ns), int(st.st_size), mirrored)
+            self._mem_cache = (cur_sig[0], cur_sig[1], mirrored)
             return [dict(r) for r in mirrored]
 
         conn, recs = self._open_mem()
         conn.close()
         self._write_idx_mirror(enc_sha, recs)
-        self._mem_cache = (int(st.st_mtime_ns), int(st.st_size), recs)
+        self._mem_cache = (cur_sig[0], cur_sig[1], recs)
         return [dict(r) for r in recs]
 
     def _open_mem(self) -> tuple[sqlite3.Connection, List[Dict[str, Any]]]:
@@ -252,13 +244,28 @@ class KekNoteRegistry:
             raw_by_key[(vault_ref, note_ref)] = row
             out.append(payload)
         self._raw_enc_rows = raw_by_key
+        if self.enc_path.exists():
+            try:
+                st = self.enc_path.stat()
+                self._raw_enc_sig = (int(st.st_mtime_ns), int(st.st_size))
+            except OSError:
+                self._raw_enc_sig = None
+        else:
+            self._raw_enc_sig = None
         return conn, out
 
     def _ensure_raw_enc_rows(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
-        if self._raw_enc_rows is not None:
+        if not self.enc_path.exists():
+            self._raw_enc_rows = {}
+            self._raw_enc_sig = None
+            return self._raw_enc_rows
+        st = self.enc_path.stat()
+        cur_sig = (int(st.st_mtime_ns), int(st.st_size))
+        if self._raw_enc_rows is not None and self._raw_enc_sig == cur_sig:
             return self._raw_enc_rows
         rows, _raw = self._load_records_with_raw()
         self._raw_enc_rows = {(str(r["vault_ref"]), str(r["note_ref"])): r for r in rows}
+        self._raw_enc_sig = cur_sig
         return self._raw_enc_rows
 
     def _save_records(
@@ -310,6 +317,7 @@ class KekNoteRegistry:
         self._write_idx_mirror(enc_sha, records)
         self._raw_enc_rows = next_raw_by_key
         st = self.enc_path.stat()
+        self._raw_enc_sig = (int(st.st_mtime_ns), int(st.st_size))
         self._mem_cache = (int(st.st_mtime_ns), int(st.st_size), [dict(r) for r in records])
 
     def upsert_paths(self, vault_ref: str, rel_paths: List[str]) -> Dict[str, str]:

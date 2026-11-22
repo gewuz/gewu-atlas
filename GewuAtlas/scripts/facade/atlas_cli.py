@@ -25,6 +25,36 @@ APP_DIR = SCRIPTS_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+_EARLY_STDIN_LOADED = False
+_EARLY_STDIN_CACHE: Optional[str] = None
+
+if __name__ == "__main__":
+    # Ultra-light fast-path: forward straight to live AtlasHotDaemon BEFORE importing heavy modules.
+    _raw_early = sys.argv[1:]
+    if _raw_early and not any(t in ("--template", "--describe", "-h", "--help") for t in _raw_early):
+        try:
+            from facade.atlas_daemon import try_forward_to_daemon as _try_daemon_fwd
+
+            def _early_stdin_loader() -> Optional[str]:
+                global _EARLY_STDIN_LOADED, _EARLY_STDIN_CACHE
+                if _EARLY_STDIN_LOADED:
+                    return _EARLY_STDIN_CACHE
+                _EARLY_STDIN_LOADED = True
+                needs = any(
+                    tok == "-" or (tok.startswith("--") and tok.endswith("=-")) or tok in ("--json-stdin", "--json_stdin")
+                    for tok in _raw_early
+                )
+                _EARLY_STDIN_CACHE = sys.stdin.read() if (needs and not sys.stdin.isatty()) else None
+                return _EARLY_STDIN_CACHE
+
+            _fwd_res = _try_daemon_fwd(_raw_early, stdin_loader=_early_stdin_loader)
+            if _fwd_res is not None:
+                _fwd_code, _fwd_out = _fwd_res
+                sys.stdout.write(_fwd_out if _fwd_out.endswith("\n") else (_fwd_out + "\n"))
+                sys.exit(_fwd_code)
+        except Exception:
+            pass
+
 def _lazy(mod_name: str, attr_name: str):
     """Lazy-import proxy so read-only CLI actions skip heavy unused engine modules."""
     _cached = None
@@ -85,6 +115,10 @@ engine_note_promote = _lazy("notes.atlas_note_engine", "note_promote")
 engine_note_slice = _lazy("notes.atlas_note_engine", "note_slice")
 engine_note_update = _lazy("notes.atlas_note_engine", "note_update")
 engine_note_update_batch = _lazy("notes.atlas_note_engine", "note_update_batch")
+engine_note_patch = _lazy("notes.atlas_note_engine", "note_patch")
+engine_note_patch_batch = _lazy("notes.atlas_note_engine", "note_patch_batch")
+engine_note_grep = _lazy("notes.atlas_note_engine", "note_grep")
+engine_project_brief = _lazy("notes.atlas_note_engine", "project_brief")
 engine_schema_check = _lazy("notes.atlas_note_engine", "schema_check")
 engine_schema_list = _lazy("notes.atlas_note_engine", "schema_list")
 
@@ -113,12 +147,15 @@ _collect_vault_changes = _lazy("notes.atlas_change_engine", "_collect_vault_chan
 _collect_targeted_changes = _lazy("notes.atlas_change_engine", "_collect_targeted_changes")
 capture_vault_snapshot = _lazy("notes.atlas_change_engine", "capture_vault_snapshot")
 capture_targeted_snapshot = _lazy("notes.atlas_change_engine", "capture_targeted_snapshot")
+configure_vault_doc_remote = _lazy("notes.atlas_change_engine", "configure_vault_doc_remote")
 doc_git_status_summary = _lazy("notes.atlas_change_engine", "doc_git_status_summary")
 estimate_affected_files = _lazy("notes.atlas_change_engine", "estimate_affected_files")
+get_vault_doc_remote = _lazy("notes.atlas_change_engine", "get_vault_doc_remote")
 init_vault_git_repo = _lazy("notes.atlas_change_engine", "init_vault_git_repo")
 inspect_vault_doc_git_state = _lazy("notes.atlas_change_engine", "inspect_vault_doc_git_state")
 engine_retention_sweep = _lazy("notes.atlas_change_engine", "retention_sweep")
 run_vault_doc_commit = _lazy("notes.atlas_change_engine", "run_vault_doc_commit")
+sync_vault_doc_remote = _lazy("notes.atlas_change_engine", "sync_vault_doc_remote")
 engine_trash_purge = _lazy("notes.atlas_change_engine", "trash_purge")
 
 engine_apply_workbench_preset = _lazy("pipeline.atlas_project_engine", "apply_workbench_preset")
@@ -170,6 +207,8 @@ from storage.vault_volume import (  # noqa: E402
     restore_vault_tree,
     sync_obsidian_bases,
     sync_obsidian_bases_detailed,
+    sync_obsidian_templates,
+    sync_obsidian_templates_detailed,
     sync_vault_layout_dirs,
     trash_vault_tree,
 )
@@ -199,6 +238,10 @@ ACTIONS = (
     "note-get",
     "file-read",
     "note-update",
+    "note-patch",
+    "note-grep",
+    "project-brief",
+    "batch",
     "note-promote",
     "note-slice",
     "note-route",
@@ -266,6 +309,8 @@ ACTIONS = (
     "undo",
     "doc-status",
     "doc-commit",
+    "doc-remote",
+    "doc-sync",
     "trash-purge",
     "retention-sweep",
     "delivery-check",
@@ -279,6 +324,8 @@ READ_ONLY_ACTIONS = frozenset(
         "inbox-list",
         "note-list",
         "note-get",
+        "note-grep",
+        "project-brief",
         "file-read",
         "note-search",
         "health-check",
@@ -424,6 +471,7 @@ KNOWN_SLOTS: Dict[str, str] = {
     "name": "str",
     "prism": "str",
     "reason": "str",
+    "with_section": "bool",
     "raw": "bool",
     "start_line": "int",
     "end_line": "int",
@@ -449,6 +497,32 @@ KNOWN_SLOTS: Dict[str, str] = {
     "batch_json": "str",
     "section": "str",
     "with_content": "bool",
+    "remote_url": "str",
+    "branch": "str",
+    "auto_push": "bool",
+    "push": "bool",
+    "direction": "str",
+    "fetch": "bool",
+    "clear": "bool",
+    "bootstrap": "str",
+    "git_layout": "str",
+    "old_text": "str",
+    "new_text": "str",
+    "replace_all": "bool",
+    "ops_json": "str",
+    "allow_managed_block": "bool",
+    "outline": "bool",
+    "pattern": "str",
+    "regex": "bool",
+    "case_sensitive": "bool",
+    "context_lines": "int",
+    "max_matches": "int",
+    "include_workbench": "bool",
+    "include_slices": "bool",
+    "max_notes": "int",
+    "steps": "str",
+    "on_error": "str",
+    "no_daemon": "bool",
 }
 
 _SQL_FRAGMENT_RE = re.compile(
@@ -609,18 +683,72 @@ def _public_entry(kek: bytes, app_id: str, entry: Dict[str, Any]) -> Dict[str, A
     return out
 
 
+_BODY_PAYLOAD_KEYS = frozenset({"content", "raw_text", "snippet", "passage", "matches", "title", "summary", "pattern", "query", "section_content", "section_heading", "diff"})
+_WIKILINK_SPAN_RE = re.compile(r"\[\[[^\]\r\n]+\]\]")
+
+
+def _split_meta_and_body_payloads(obj: Any, *, in_body: bool = False) -> Tuple[Any, List[Any]]:
+    """Separate structured metadata/capsules from user note-body text fields for dual-layer leak checking."""
+    bodies: List[Any] = []
+    if in_body:
+        bodies.append(obj)
+        return None, bodies
+    if isinstance(obj, dict):
+        meta_out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if k in _BODY_PAYLOAD_KEYS:
+                bodies.append(v)
+            else:
+                m_sub, b_sub = _split_meta_and_body_payloads(v, in_body=False)
+                meta_out[k] = m_sub
+                bodies.extend(b_sub)
+        return meta_out, bodies
+    if isinstance(obj, list):
+        meta_list: List[Any] = []
+        for item in obj:
+            m_sub, b_sub = _split_meta_and_body_payloads(item, in_body=False)
+            meta_list.append(m_sub)
+            bodies.extend(b_sub)
+        return meta_list, bodies
+    return obj, bodies
+
+
 def _assert_zero_path_leak(env: Dict[str, Any], ws_root: Path, sealed_paths: List[str]) -> None:
-    rendered = json.dumps(env, ensure_ascii=False)
-    forbidden_tokens = [
+    meta_part, body_parts = _split_meta_and_body_payloads(env)
+    sealed_clean = [p for p in sealed_paths if p]
+
+    # Layer 1 (Strict metadata/handles/capsules): never allow any volume, .trash, ws_root, or sealed paths.
+    rendered_meta = json.dumps(meta_part, ensure_ascii=False)
+    meta_forbidden = [
         "GewuAtlas-data",
         "Volumes/",
         "Volumes\\",
         ".trash",
         str(ws_root),
-    ] + [p for p in sealed_paths if p]
-    for tok in forbidden_tokens:
-        if tok in rendered:
+    ] + sealed_clean
+    for tok in meta_forbidden:
+        if tok in rendered_meta:
             raise VaultStoreError("E_HALT_SECURITY", "路径隔离防线拦截：输出含受控目录线索", exit_code=2)
+
+    # Layer 2 (Note body & diff payloads): always block real host/vault paths even inside wikilinks,
+    # and block bare sealed relative paths outside Obsidian's legitimate `[[dir/Note|Alias]]` disambiguation syntax,
+    # while allowing legitimate prose terms like Obsidian `.trash/` or macOS `/Volumes/`.
+    if body_parts:
+        rendered_body = json.dumps(body_parts, ensure_ascii=False)
+        body_hard_forbidden = [
+            "GewuAtlas-data",
+            "Volumes/GewuAtlas-data",
+            "Volumes\\GewuAtlas-data",
+            str(ws_root),
+        ]
+        for tok in body_hard_forbidden:
+            if tok in rendered_body:
+                raise VaultStoreError("E_HALT_SECURITY", "路径隔离防线拦截：输出含受控目录线索", exit_code=2)
+        if sealed_clean:
+            body_no_wikilinks = _WIKILINK_SPAN_RE.sub("[[...]]", rendered_body)
+            for tok in sealed_clean:
+                if tok in body_no_wikilinks:
+                    raise VaultStoreError("E_HALT_SECURITY", "路径隔离防线拦截：输出含受控目录线索", exit_code=2)
 
 
 def _parse_channels(raw_argv: List[str], stdin_text: Optional[str]) -> Dict[str, Any]:
@@ -644,10 +772,13 @@ def _parse_channels(raw_argv: List[str], stdin_text: Optional[str]) -> Dict[str,
         key = k_raw.replace("-", "_")
         if key in ("payload", "json_stdin"):
             if not has_inline:
-                if i + 1 >= len(raw_argv):
+                if key == "json_stdin" and (i + 1 >= len(raw_argv) or raw_argv[i + 1].startswith("--")):
+                    v = "-"
+                elif i + 1 >= len(raw_argv):
                     raise VaultStoreError("E_PARAM_MISSING", f"--{k_raw} 缺少 JSON 内容或 -", exit_code=1)
-                v = raw_argv[i + 1]
-                i += 1
+                else:
+                    v = raw_argv[i + 1]
+                    i += 1
             raw_json = stdin_text if v == "-" else v
             if not raw_json or not raw_json.strip():
                 raise VaultStoreError("E_PARAM_MISSING", f"--{k_raw} 载荷为空", exit_code=1)
@@ -741,10 +872,22 @@ def _parse_channels(raw_argv: List[str], stdin_text: Optional[str]) -> Dict[str,
         "exclude_pending",
         "exclude_draft",
         "with_content",
+        "auto_push",
+        "push",
+        "fetch",
+        "clear",
+        "replace_all",
+        "allow_managed_block",
+        "outline",
+        "regex",
+        "case_sensitive",
+        "include_workbench",
+        "include_slices",
+        "no_daemon",
     ):
         if bkey in merged:
             merged[bkey] = _coerce_bool(merged[bkey], bkey)
-    for ikey in ("top_k", "level", "offset", "min_chars", "depth", "target_chars", "max_chars", "days", "dpi", "threshold", "decorative_size", "decorative_dim", "end_offset", "start_line", "end_line", "head", "tail", "hops", "min_score", "snippet_width", "summary_width"):
+    for ikey in ("top_k", "level", "offset", "min_chars", "depth", "target_chars", "max_chars", "days", "dpi", "threshold", "decorative_size", "decorative_dim", "end_offset", "start_line", "end_line", "head", "tail", "hops", "min_score", "snippet_width", "summary_width", "context_lines", "max_matches", "max_notes"):
         if ikey in merged and merged[ikey] is not None:
             try:
                 merged[ikey] = int(merged[ikey])
@@ -759,7 +902,15 @@ def _parse_channels(raw_argv: List[str], stdin_text: Optional[str]) -> Dict[str,
     for skey, sval in list(merged.items()):
         if isinstance(sval, str):
             merged[skey] = _check_safe_text(skey, sval)
-    if "force" in merged and merged.get("action") not in ("vfs-trash", "moc-sync"):
+    if "force" in merged and merged.get("action") not in (
+        "vfs-trash",
+        "moc-sync",
+        "index-sync",
+        "doc-commit",
+        "doc-sync",
+        "undo",
+        "guard",
+    ):
         raise VaultStoreError("E_PARAM_UNKNOWN_FIELD", "未知字段: --force", exit_code=2)
     return merged
 
@@ -874,6 +1025,114 @@ _ACTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
         },
         "anchor": "写正文/表格时支持直接写 [[nte_XX]] 或 [[标题]] 自动转规范双链；体检断链后可用 --mode fix 一键批修，无需自写脚本。",
     },
+    "batch": {
+        "command": "./gewu atlas --action batch --ref <vlt_01> [--project_ref <prj_01>] --json-stdin",
+        "fill_template": {
+            "action": "batch",
+            "ref": "<vlt_01>",
+            "project_ref": "<prj_01>",
+            "on_error": "stop",
+            "steps": [
+                {
+                    "id": "s1",
+                    "action": "note-create",
+                    "args": {
+                        "project_ref": "<prj_01>",
+                        "zone": "workbench",
+                        "subdir": "ws-<agent>/drafts",
+                        "title": "<主稿标题>",
+                        "summary": "<一句话摘要>",
+                        "content": "## 1. 背景\n...",
+                    },
+                },
+                {
+                    "id": "s2",
+                    "action": "note-create",
+                    "args": {
+                        "project_ref": "<prj_01>",
+                        "zone": "workbench",
+                        "subdir": "ws-<agent>/drafts",
+                        "title": "<关联卡标题>",
+                        "summary": "<摘要>",
+                        "content": "关联主稿 [[$s1.note_ref]]。",
+                    },
+                },
+            ],
+        },
+        "examples": [
+            'cat <<\'EOF\' | ./gewu atlas --action batch --ref vlt_01 --project_ref prj_01 --json-stdin\n{"steps":[{"id":"s1","action":"note-create","args":{"project_ref":"prj_01","zone":"workbench","subdir":"ws-agent/drafts","title":"主稿","summary":"摘要","content":"## 1. 背景\\n正文"}},{"id":"s2","action":"note-create","args":{"project_ref":"prj_01","zone":"workbench","subdir":"ws-agent/drafts","title":"引用卡","summary":"摘要","content":"引用 [[$s1.note_ref]]"}}]}\nEOF',
+            'cat <<\'EOF\' | ./gewu atlas --action batch --ref vlt_01 --project_ref prj_01 --json-stdin\n{"steps":[{"id":"b","action":"project-brief","args":{"project_ref":"prj_01"}},{"id":"g","action":"note-grep","args":{"project_ref":"prj_01","pattern":"100 MiB","with_section":true}},{"id":"r","action":"note-get","args":{"note_refs":"$g.note_refs","outline":true}}]}\nEOF',
+            './gewu atlas --action batch --ref vlt_01 --project_ref prj_01 --steps \'[{"id":"p1","action":"note-patch","args":{"note_ref":"nte_01","section":"## 结论","content":"新结论"}}]\'',
+        ],
+        "anchor": "推荐用 --json-stdin 管道传入 {\"steps\":[{\"id\":\"s1\",\"action\":\"...\",\"args\":{...}}]}（亦可经 --steps 或 --batch_json 传）；后续步骤支持 $s1.note_ref（或搜索/grep 步骤的 $g.note_refs / $g.top_note_ref）串联；全只读步骤自动走共享锁零 DOC 票/零快照快路径；写批处理单次最多 50 步，合并加锁/DOC票/快照/验货。",
+    },
+    "note-patch": {
+        "command": './gewu atlas --action note-patch --ref <vlt_01> (--note_ref <nte_01> | --note_refs <nte_01,nte_02>) (--old_text "<旧片段>" --new_text "<新片段>" | --section "## 结论" --content "<新正文>" | --mode append|prepend --content "<追加内容>" | --ops_json \'[{"op":"section","section":"## 结论","content":"..."},{"op":"append","content":"..."}]\') [--dry_run true]',
+        "fill_template": {
+            "action": "note-patch",
+            "ref": "<vlt_01>",
+            "note_ref": "<nte_01>",
+            "ops_json": [
+                {"op": "section", "section": "## 结论", "content": "<替换为新的章节正文>"},
+                {"op": "append", "content": "## 补充引用\n<末尾追加的新章节或段落>"},
+            ],
+        },
+        "examples": [
+            './gewu atlas --action note-patch --ref vlt_01 --note_ref nte_01 --old_text "旧句子" --new_text "新句子"',
+            './gewu atlas --action note-patch --ref vlt_01 --note_ref nte_01 --section "## 4. 结论" --content "更新后的结论正文"',
+            './gewu atlas --action note-patch --ref vlt_01 --note_ref nte_01 --mode append --content "## 5. 补充\\n详见 [[nte_02]]"',
+            './gewu atlas --action note-patch --ref vlt_01 --note_ref nte_01 --ops_json \'[{"op":"section","section":"## 4. 结论","content":"新结论"},{"op":"append","content":"## 5. 补充\\n详见 [[nte_02]]"}]\'',
+            './gewu atlas --action note-patch --ref vlt_01 --note_refs nte_01,nte_02 --old_text "[[外站断链]]" --new_text "外站断链" --replace_all true --dry_run true',
+        ],
+        "anchor": "多段原子补丁 --ops_json 每项必须含 \"op\" 键（replace/section/append/prepend）；支持 --note_refs 跨多卡受控批量替换（配 --dry_run true 预演，未命中自动跳过）；未找到标题或文本时报错直接附带当前可用标题大纲；自动保护受控块、21-Library 原文只读与日记人类区。",
+    },
+    "note-grep": {
+        "command": './gewu atlas --action note-grep --ref <vlt_01> --pattern "<关键词或正则>" [--project_ref <prj_01>] [--regex true|false] [--with_section true] [--zone <library|slices|atomics|moc|artifacts|workbench>] [--context_lines 1] [--max_matches 50]',
+        "fill_template": {
+            "action": "note-grep",
+            "ref": "<vlt_01>",
+            "project_ref": "<prj_01>",
+            "pattern": "<关键词或正则>",
+            "regex": False,
+            "with_section": False,
+            "context_lines": 1,
+            "max_matches": 50,
+        },
+        "examples": [
+            './gewu atlas --action note-grep --ref vlt_01 --project_ref prj_01 --pattern "100 MiB" --with_section true',
+            './gewu atlas --action note-grep --ref vlt_01 --project_ref prj_01 --pattern "TODO|FIXME" --regex true --include_workbench true',
+        ],
+        "anchor": "跨卡字面量或正则检索，仅返回逻辑句柄 nte_XX、行号与上下文片段（零物理路径）；加 --with_section true 可直接带回命中所属的完整章节标题与正文，免二次 note-get。",
+    },
+    "project-brief": {
+        "command": "./gewu atlas --action project-brief --ref <vlt_01> [--project_ref <prj_01>] [--include_slices false] [--max_notes 200]",
+        "fill_template": {
+            "action": "project-brief",
+            "ref": "<vlt_01>",
+            "project_ref": "<prj_01>",
+            "include_slices": False,
+            "max_notes": 200,
+        },
+        "examples": [
+            "./gewu atlas --action project-brief --ref vlt_01 --project_ref prj_01",
+            "./gewu atlas --action project-brief --ref vlt_01 --project_ref prj_01 --include_slices true",
+        ],
+        "anchor": "一屏返回分区统计、核心卡片句柄（MOC/Artifacts/Library/Atomics/Workbench）与双链骨架；默认省略切片明细以节省上下文。",
+    },
+    "note-get": {
+        "command": "./gewu atlas --action note-get --ref <vlt_01> (--note_ref <nte_01> | --note_refs <nte_01,nte_02>) [--outline true] [--start_line 1 --end_line 80]",
+        "fill_template": {
+            "action": "note-get",
+            "ref": "<vlt_01>",
+            "note_refs": "<nte_01,nte_02>",
+            "outline": False,
+        },
+        "examples": [
+            "./gewu atlas --action note-get --ref vlt_01 --note_refs nte_01,nte_02 --outline true",
+            "./gewu atlas --action note-get --ref vlt_01 --note_ref nte_01 --start_line 1 --end_line 80",
+        ],
+        "anchor": "传 --outline true 仅返回标题大纲与行号（不返回全文，大幅省上下文）；支持 --note_refs 逗号分隔批量读取，以及 --start_line / --end_line 分段精读。",
+    },
 }
 
 
@@ -932,6 +1191,8 @@ def _template_payload(raw_argv: Optional[Sequence[str]] = None) -> Dict[str, Any
             "fill_template": fill,
             "slots": slot_entries,
         }
+        if (curated or {}).get("examples"):
+            data["examples"] = list(curated["examples"])
         anchor = (curated or {}).get("anchor") or "按 fill_template 传入参数；所有路径均通过句柄（--ref / --project_ref / --note_ref）托管隔离。"
         cap = _triad(
             f"已返回动作 `{req_action}` 的专用参数模板与用法（零副作用）",
@@ -946,12 +1207,16 @@ def _template_payload(raw_argv: Optional[Sequence[str]] = None) -> Dict[str, Any
         "project-create",
         "project-list",
         "project-get",
+        "project-brief",
         "workbench-workspace",
         "note-search",
+        "note-grep",
         "note-list",
         "note-get",
         "note-create",
+        "note-patch",
         "note-update",
+        "batch",
         "ingest",
         "note-slice",
         "atomic-extract",
@@ -1003,22 +1268,11 @@ def raw_argv_keys(raw_argv: List[str]) -> set[str]:
 
 @contextmanager
 def _atlas_state_lock(state_dir: Path, *, shared: bool = False):
-    """Serialize concurrent CLI operations; read-only ops take LOCK_SH for non-blocking concurrency."""
-    if fcntl is None:
+    """Serialize concurrent CLI operations across POSIX and Windows; read-only ops take LOCK_SH."""
+    from storage.vault_kek_store import registry_file_lock
+
+    with registry_file_lock(state_dir / ".atlas-state", shared=shared):
         yield
-        return
-    state_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = state_dir / ".atlas-state.lock"
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(str(lock_path), flags, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-        yield
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
 
 
 def _normalize_unified_action(action: str, args: Dict[str, Any]) -> str:
@@ -1102,6 +1356,8 @@ def _normalize_unified_action(action: str, args: Dict[str, Any]) -> str:
             "links": "vfs-links",
             "doc-status": "doc-status",
             "doc-commit": "doc-commit",
+            "doc-remote": "doc-remote",
+            "doc-sync": "doc-sync",
             "clean-attachments": "clean-attachments",
             "archive-list": "archive-list",
             "archive-pack": "archive-pack",
@@ -1119,7 +1375,11 @@ def _normalize_unified_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
-def _execute_action(args: Dict[str, Any]) -> Tuple[int, Dict[str, Any], List[str]]:
+def _execute_action(
+    args: Dict[str, Any],
+    *,
+    hot_registries: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, Dict[str, Any], List[str]]:
     action = str(args.get("action", "")).strip()
     ws_root = _workspace_root()
     if not action:
@@ -1147,7 +1407,7 @@ def _execute_action(args: Dict[str, Any]) -> Tuple[int, Dict[str, Any], List[str
         action in {
             "trash-purge", "retention-sweep", "workbench-workspace", "fmt",
             "url-ingest", "journal-archive", "archive-pack", "workbench-preset", "project-undo",
-            "moc-sync",
+            "moc-sync", "note-patch",
         }
         or (action == "note-link" and str(args.get("mode") or "link").strip().lower() == "fix")
     ):
@@ -1156,7 +1416,7 @@ def _execute_action(args: Dict[str, Any]) -> Tuple[int, Dict[str, Any], List[str
     state_dir, _ = _runtime_dirs()
     is_shared = _is_non_mutating_vault_op(action, args) or action in ("vault", "status", "vault-list", "vault-get", "schema-list", "ticket-list")
     with _atlas_state_lock(state_dir, shared=is_shared):
-        return _execute_action_locked(action, args, ws_root, state_dir)
+        return _execute_action_locked(action, args, ws_root, state_dir, hot_registries=hot_registries)
 
 
 def _execute_action_locked(
@@ -1164,10 +1424,12 @@ def _execute_action_locked(
     args: Dict[str, Any],
     ws_root: Path,
     state_dir: Path,
+    *,
+    hot_registries: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, Dict[str, Any], List[str]]:
     app_id = _app_id()
-    kek = load_or_init_kek(state_dir / "atlas-vaults.kek")
-    reg = KekVaultRegistry(app_id, state_dir / "atlas-vaults.enc", kek)
+    kek = hot_registries["kek"] if (hot_registries and hot_registries.get("kek") is not None) else load_or_init_kek(state_dir / "atlas-vaults.kek")
+    reg = hot_registries["vault_reg"] if (hot_registries and hot_registries.get("vault_reg") is not None) else KekVaultRegistry(app_id, state_dir / "atlas-vaults.enc", kek)
     all_existing = reg.list_vaults(include_deleted=True)
     sealed_paths = [
         p
@@ -1363,7 +1625,7 @@ def _execute_action_locked(
             note_reg=note_reg,
             kek=kek,
             app_id=app_id,
-            cache_dir=state_dir / "atlas-note-index",
+            cache_dir=state_dir / "notes_index",
         )
 
         pub = _public_entry(kek, app_id, entry)
@@ -1549,7 +1811,7 @@ def _execute_action_locked(
         args["ref"] = ref_arg
     if action == "note-search" and not vault_id_arg and not ref_arg:
         top_k = int(args.get("top_k") or 10)
-        note_reg = KekNoteRegistry(app_id, state_dir / "atlas-notes.enc", kek)
+        note_reg = hot_registries["note_reg"] if (hot_registries and hot_registries.get("note_reg") is not None) else KekNoteRegistry(app_id, state_dir / "atlas-notes.enc", kek)
         active_rows = [r for r in reg.list_vaults(include_deleted=False) if not r.get("deleted")]
         vault_entries = [
             (str(r["ref"]), str(r.get("title") or ""), resolve_safe_vault_dir(ws_root, str(r["rel_path"])))
@@ -1708,6 +1970,7 @@ def _execute_action_locked(
         if updated["obsidian_base"]:
             vdir = resolve_safe_vault_dir(ws_root, updated["rel_path"])
             sync_obsidian_bases(vdir)
+            sync_obsidian_templates(vdir)
 
         pub = _public_entry(kek, app_id, updated)
         cap = _triad(
@@ -1760,6 +2023,7 @@ def _execute_action_locked(
         if res.get("obsidian_base"):
             vdir = resolve_safe_vault_dir(ws_root, res["rel_path"])
             sync_obsidian_bases(vdir)
+            sync_obsidian_templates(vdir)
         pub = _public_entry(kek, app_id, res)
         cap = _triad(
             f"已从隔离回收槽恢复 Vault 句柄 {pub['ref']}（标题「{pub['title']}」）",
@@ -1781,21 +2045,26 @@ def _execute_action_locked(
         added_layout_dirs = sync_vault_layout_dirs(vdir)
         overwrite_bases = bool(args.get("force", False))
         synced, preserved = sync_obsidian_bases_detailed(vdir, overwrite=overwrite_bases)
+        tpl_synced, tpl_preserved = sync_obsidian_templates_detailed(vdir, overwrite=overwrite_bases)
         updated = reg.update_vault(vault_id=cur["vault_id"], obsidian_base=True)
         pub = {
             "ref": updated["ref"],
             "synced": synced,
             "preserved": preserved,
             "preserved_count": len(preserved),
+            "templates_synced": tpl_synced,
+            "templates_preserved": tpl_preserved,
+            "templates_preserved_count": len(tpl_preserved),
             "overwrote_existing": overwrite_bases,
             "added_layout_dirs_count": added_layout_dirs,
             "path_sealed": True,
         }
         preserved_hint = f"，已保护跳过现存人工看板 {len(preserved)} 个" if preserved else ""
+        tpl_hint = f"、同步 {len(tpl_synced)} 个 90-System/01-Templates 文档模板"
         cap = _triad(
-            f"已为 Vault 句柄 {cur['ref']} 同步 {len(synced)} 个 10-Index 看板文件{preserved_hint}并校验骨架（新增目录 {added_layout_dirs} 个）",
+            f"已为 Vault 句柄 {cur['ref']} 同步 {len(synced)} 个 10-Index 看板文件{preserved_hint}{tpl_hint}并校验骨架（新增目录 {added_layout_dirs} 个）",
             [f"查看 Vault: ./gewu atlas --action vault-get --ref {cur['ref']}", "直接向人类汇报现状"],
-            "默认保护人类已在 10-Index/*.base 修改过的看板不予覆盖（仅在显式 --force true 时重刷模板），同时增量补齐 dicts/layout.yaml 缺失目录。",
+            "默认保护人类已在 10-Index/*.base 与 90-System/01-Templates/*.md 修改过的文件不予覆盖（仅在显式 --force true 时重刷模板），同时增量补齐 dicts/layout.yaml 缺失目录。",
             terminal=True,
         )
         return 0, _envelope(True, "OK_INDEX_SYNCED", cap, data=pub), sealed_paths
@@ -1807,8 +2076,8 @@ def _execute_action_locked(
     vdir = resolve_safe_vault_dir(ws_root, cur["rel_path"])
     vref = str(cur["ref"])
     sealed_paths.append(str(cur["rel_path"]))
-    note_reg = KekNoteRegistry(app_id, state_dir / "atlas-notes.enc", kek)
-    proj_reg = KekProjectRegistry(app_id, state_dir / "atlas-projects.enc", kek)
+    note_reg = hot_registries["note_reg"] if (hot_registries and hot_registries.get("note_reg") is not None) else KekNoteRegistry(app_id, state_dir / "atlas-notes.enc", kek)
+    proj_reg = hot_registries["proj_reg"] if (hot_registries and hot_registries.get("proj_reg") is not None) else KekProjectRegistry(app_id, state_dir / "atlas-projects.enc", kek)
     project_ref_arg = str(args.get("project_ref") or "").strip() or None
     scope_arg = str(args.get("scope") or "auto").strip() or "auto"
     ticket_id_arg = str(args.get("ticket_id") or "").strip() or None
@@ -1830,7 +2099,66 @@ def _execute_action_locked(
     )
 
 
+_BATCH_READ_ONLY_ACTIONS = frozenset(
+    {
+        "note-get",
+        "note-list",
+        "note-search",
+        "note-grep",
+        "project-brief",
+        "health-check",
+        "schema-check",
+        "vfs-links",
+    }
+)
+
+
+def _extract_batch_steps_safe(args: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    raw_steps = args.get("steps")
+    if raw_steps is None and args.get("batch_json") is not None:
+        bj = args.get("batch_json")
+        try:
+            parsed_bj = json.loads(str(bj)) if isinstance(bj, str) else bj
+        except Exception:
+            return None
+        raw_steps = parsed_bj.get("steps") if isinstance(parsed_bj, dict) else parsed_bj
+    elif isinstance(raw_steps, str):
+        try:
+            raw_steps = json.loads(raw_steps)
+        except Exception:
+            return None
+    if isinstance(raw_steps, list) and raw_steps and all(isinstance(s, dict) for s in raw_steps):
+        return raw_steps
+    return None
+
+
+def _is_read_only_batch(args: Dict[str, Any]) -> bool:
+    steps = _extract_batch_steps_safe(args)
+    if not steps:
+        return False
+    for st in steps:
+        s_act = str(st.get("action") or "").strip()
+        if s_act in _BATCH_READ_ONLY_ACTIONS:
+            continue
+        if s_act == "note-patch" and isinstance(st.get("args"), dict) and bool(st["args"].get("dry_run", False)):
+            continue
+        return False
+    return True
+
+
+def _is_in_place_batch_only(args: Dict[str, Any]) -> bool:
+    steps = _extract_batch_steps_safe(args)
+    if not steps:
+        return False
+    allowed = _BATCH_READ_ONLY_ACTIONS | {"note-patch"}
+    return all(str(st.get("action") or "").strip() in allowed for st in steps)
+
+
 def _is_non_mutating_vault_op(action: str, args: Dict[str, Any]) -> bool:
+    if action == "batch" and _is_read_only_batch(args):
+        return True
+    if action == "note-patch" and bool(args.get("dry_run", False)):
+        return True
     if action == "atomic-extract" and str(args.get("mode") or "extract") in ("list-pending", "unextracted"):
         return True
     if action in ("fmt-window", "fmt-assets"):
@@ -1908,6 +2236,65 @@ def _scan_workspace_sprawl(ws_root: Path) -> List[str]:
     return sprawl
 
 
+def _is_workbench_rel(rel: str) -> bool:
+    norm = str(rel or "").strip().strip("/")
+    return "/30-Workbench/" in f"/{norm}/"
+
+
+def _count_dirty_dangling_links(
+    *,
+    vdir: Path,
+    vref: str,
+    note_reg: KekNoteRegistry,
+    dirty_rels: List[str],
+) -> int:
+    from notes.atlas_wikilink_tools import split_wikilink_inner
+    from notes.atlas_yamlmini import extract_frontmatter, extract_wikilinks, resolve_wikilink
+
+    fm_ref_fields = ("source", "sources", "toc", "slices", "supersedes", "superseded_by", "source_file", "extracted_to", "map", "moc")
+    handle_map = note_reg.list_vault_handles(vref)
+    dangling = 0
+    for rel in dirty_rels:
+        if not rel or rel.startswith("05-Journal/"):
+            continue
+        fp = vdir / rel
+        if not fp.is_file() or fp.is_symlink():
+            continue
+        try:
+            txt = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        meta, body, has_fm = extract_frontmatter(txt)
+        targets = list(extract_wikilinks(body))
+        if has_fm and isinstance(meta, dict):
+            for fk in fm_ref_fields:
+                fval = meta.get(fk)
+                items = [fval] if isinstance(fval, str) else (fval if isinstance(fval, list) else [])
+                for item in items:
+                    if not isinstance(item, str):
+                        continue
+                    s = item.strip()
+                    if s.startswith("[[") and s.endswith("]]"):
+                        t_inner, _, _ = split_wikilink_inner(s[2:-2])
+                        if t_inner:
+                            targets.append(t_inner)
+                    elif s:
+                        targets.append(s)
+        for target in targets:
+            t_clean = str(target or "").strip()
+            if not t_clean:
+                continue
+            # Ignore external relative paths or attachment file links if present on disk
+            if t_clean.startswith(("./", "../")):
+                continue
+            if not resolve_wikilink(t_clean, rel, handle_map):
+                # Check attachments folder for embedded image/file wikilinks
+                att_hits = list((vdir / "99-Assets").rglob(Path(t_clean).name)) if (vdir / "99-Assets").is_dir() else []
+                if not att_hits:
+                    dangling += 1
+    return dangling
+
+
 def _piggyback_delivery_gate(
     *,
     ws_root: Path,
@@ -1923,22 +2310,35 @@ def _piggyback_delivery_gate(
     app_id: Optional[str] = None,
     cache_dir: Optional[Path] = None,
     batch_key: str = "",
+    dirty_only: bool = False,
+    dirty_rels: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Piggyback lightweight boundary & link check onto mutating operator responses.
 
     Manifest delivery history is appended ONLY on formal deliverable events (`artifact-adopt` to artifacts,
     `artifact-finalize`), never spamming noisy entries for intermediate drafts/edits.
+    For intermediate `zone=workbench` drafts (`dirty_only=True`), validates only workspace root sprawl and
+    the touched draft's own wikilinks in O(1); full-vault 60/60 check runs on formal transitions & `guard`.
     """
     sprawl = _scan_workspace_sprawl(ws_root)
-    link_res = engine_vfs_links(
-        vault_dir=vdir,
-        vault_ref=vref,
-        note_reg=note_reg,
-        kek=kek,
-        app_id=app_id,
-        cache_dir=cache_dir,
-    )
-    dangling_cnt = int(link_res.get("dangling_count", 0))
+    gate_scope = "dirty_only" if (dirty_only and dirty_rels) else "full_vault"
+    if gate_scope == "dirty_only":
+        dangling_cnt = _count_dirty_dangling_links(
+            vdir=vdir,
+            vref=vref,
+            note_reg=note_reg,
+            dirty_rels=list(dirty_rels or []),
+        )
+    else:
+        link_res = engine_vfs_links(
+            vault_dir=vdir,
+            vault_ref=vref,
+            note_reg=note_reg,
+            kek=kek,
+            app_id=app_id,
+            cache_dir=cache_dir,
+        )
+        dangling_cnt = int(link_res.get("dangling_count", 0))
     boundary_ok = len(sprawl) == 0
     links_ok = dangling_cnt == 0
     score = 60
@@ -2056,6 +2456,7 @@ def _piggyback_delivery_gate(
             pass
     passed = (score == 60) and manifest_ok
     gate_summary: Dict[str, Any] = {
+        "scope": gate_scope,
         "operator_score": score,
         "operator_max": 60,
         "operator_passed": passed,
@@ -2110,6 +2511,7 @@ def _evaluate_delivery_gate(
     vref: str,
     note_reg: KekNoteRegistry,
     proj_reg: KekProjectRegistry,
+    kek: Optional[bytes] = None,
     project_ref: Optional[str] = None,
     note_ref_arg: Optional[str] = None,
     note_refs_arg: Any = None,
@@ -2204,7 +2606,8 @@ def _evaluate_delivery_gate(
                 if ur not in unread_cited_refs:
                     unread_cited_refs.append(ur)
 
-    link_res = engine_vfs_links(vault_dir=vdir, vault_ref=vref, note_reg=note_reg, note_ref=target_single, kek=note_reg._kek, app_id=note_reg.app_id, cache_dir=state_dir / "notes_index")
+    eff_kek = kek if kek is not None else load_or_init_kek(state_dir / "atlas-vaults.kek")
+    link_res = engine_vfs_links(vault_dir=vdir, vault_ref=vref, note_reg=note_reg, note_ref=target_single, kek=eff_kek, app_id=note_reg.app_id, cache_dir=state_dir / "notes_index")
     dangling_cnt = int(link_res.get("dangling_count", 0))
     truth_issues: List[str] = []
     if unverified_refs:
@@ -2367,6 +2770,39 @@ def _evaluate_delivery_gate(
     return report, sealed
 
 
+def _reconcile_registries_after_remote_pull(
+    *,
+    vdir: Path,
+    vref: str,
+    state_dir: Path,
+    note_reg: KekNoteRegistry,
+    proj_reg: KekProjectRegistry,
+    kek: bytes,
+    app_id: str,
+) -> Dict[str, int]:
+    """Refresh KEK project & note registries after remote commits update Vault files."""
+    p_root = vdir / "30-Projects"
+    proj_rels = (
+        [
+            f"30-Projects/{c.name}"
+            for c in sorted(p_root.iterdir())
+            if not c.is_symlink() and c.is_dir() and not c.name.startswith(".")
+        ]
+        if p_root.is_dir()
+        else []
+    )
+    pmap = proj_reg.sync_projects(vref, proj_rels)
+    _, n_map = reconcile_note_index(
+        vault_dir=vdir,
+        vault_ref=vref,
+        note_reg=note_reg,
+        kek=kek,
+        app_id=app_id,
+        cache_dir=state_dir / "notes_index",
+    )
+    return {"projects_indexed": len(pmap), "notes_indexed": len(n_map)}
+
+
 def _run_governed_vault_action(
     *,
     action: str,
@@ -2384,12 +2820,67 @@ def _run_governed_vault_action(
     ticket_id_arg: Optional[str],
     sealed_paths: List[str],
 ) -> Tuple[int, Dict[str, Any], List[str]]:
+    if action == "doc-remote":
+        provided = set(args.get("_provided_keys", args))
+        clear_flag = bool(args.get("clear", False))
+        remote_url_arg = str(args.get("remote_url")).strip() if "remote_url" in provided and args.get("remote_url") is not None else None
+        branch_arg = str(args.get("branch")).strip() if "branch" in provided and args.get("branch") is not None else None
+        auto_push_arg = bool(args.get("auto_push")) if "auto_push" in provided else None
+        git_layout_arg = str(args.get("git_layout")).strip().lower() if "git_layout" in provided and args.get("git_layout") is not None else None
+        fetch_flag = bool(args.get("fetch", False))
+        if clear_flag or remote_url_arg is not None or branch_arg is not None or auto_push_arg is not None or git_layout_arg is not None:
+            res = configure_vault_doc_remote(
+                state_dir=state_dir,
+                vault_ref=vref,
+                vault_dir=vdir,
+                remote_url=remote_url_arg,
+                branch=branch_arg,
+                auto_push=auto_push_arg,
+                git_layout=git_layout_arg,
+                clear=clear_flag,
+            )
+            if fetch_flag and res.get("configured"):
+                res.update(get_vault_doc_remote(state_dir, vref, vdir, fetch=True))
+        else:
+            res = get_vault_doc_remote(state_dir, vref, vdir, fetch=fetch_flag)
+            res["included_scopes"] = ["dropzone", "journal"]
+            res["ignored_scopes"] = ["obsidian", "archives", "source", "trash"]
+            res["path_sealed"] = True
+        res["vault_ref"] = vref
+        if res.get("configured"):
+            st_msg = (
+                f"Vault {vref} DOC 远端同步配置已就绪（branch={res.get('branch')}，"
+                f"auto_push={res.get('auto_push')}，ahead={res.get('ahead', 0)}/behind={res.get('behind', 0)}）"
+            )
+            orbit = [
+                f"执行 DOC 与远端双向同步: ./gewu atlas --action doc-sync --ref {vref}",
+                f"查看 DOC 与远端状态: ./gewu atlas --action doc-status --ref {vref} --fetch true",
+                "直接向人类汇报现状",
+            ]
+        else:
+            st_msg = f"Vault {vref} DOC 远端尚未绑定（仅本地 detached DOC Git 追踪）"
+            orbit = [
+                f"绑定 GitHub 远端: ./gewu atlas --action doc-remote --ref {vref} --remote_url https://github.com/<owner>/<repo>.git --branch main --auto_push true",
+                "直接向人类汇报现状",
+            ]
+        cap = _triad(
+            st_msg,
+            orbit,
+            "DOC 轨与 GitHub 同步策略已统一：包含 00-DropZone 与 05-Journal，排除 .obsidian、source、归档与回收区，认证优先复用 gh auth git-credential，零明文 Token 与零物理路径。",
+            terminal=True,
+        )
+        return 0, _envelope(True, "OK_DOC_REMOTE", cap, data=res), sealed_paths
+
     if action == "doc-commit":
         commit_mode = str(args.get("mode") or "standard").strip() or "standard"
+        if commit_mode == "doc-commit":
+            commit_mode = "standard"
         if commit_mode not in ("standard", "human-sync"):
             raise VaultStoreError("E_PARAM_INVALID", "doc-commit 仅支持 --mode standard|human-sync", exit_code=1)
         actor = str(args.get("by") or args.get("agent") or "Agent").strip() or "Agent"
         force_commit = bool(args.get("force", False))
+        provided = set(args.get("_provided_keys", args))
+        push_arg: Optional[bool] = bool(args.get("push")) if "push" in provided else None
         pre_state = inspect_vault_doc_git_state(state_dir, vref, vdir, note_reg=note_reg)
         if commit_mode == "human-sync" and pre_state.get("dirty_count", 0) > 0 and not force_commit:
             link_res = engine_vfs_links(vault_dir=vdir, vault_ref=vref, note_reg=note_reg, kek=kek, app_id=app_id, cache_dir=state_dir / "notes_index")
@@ -2430,20 +2921,146 @@ def _run_governed_vault_action(
             reason=str(args.get("reason") or ("reconcile human manual edits and deletions" if commit_mode == "human-sync" else "manual DOC track checkpoint")),
             phase="post",
             commit_mode=commit_mode,
+            push=push_arg,
         )
+        remote_sync = res.get("remote_sync") if isinstance(res.get("remote_sync"), dict) else {}
+        if remote_sync.get("head_changed"):
+            res["reconciled_index"] = _reconcile_registries_after_remote_pull(
+                vdir=vdir, vref=vref, state_dir=state_dir, note_reg=note_reg, proj_reg=proj_reg, kek=kek, app_id=app_id
+            )
         post_status = doc_git_status_summary(state_dir, vref, vdir, note_reg=note_reg)
         res["vault_ref"] = vref
         res["clean_tree"] = bool(post_status.get("clean"))
         res["dirty_count_after"] = int(post_status.get("dirty_count", 0))
         res["path_sealed"] = True
         head_s = res.get("commit_short") or res.get("head_short") or "clean"
+        rs_status = str(remote_sync.get("status") or "skipped_unconfigured")
+        rs_hint = ""
+        if remote_sync.get("configured"):
+            rs_hint = f"，远端同步={rs_status}"
         cap = _triad(
-            f"Vault {vref} DOC 轨 Git {'状态 4 人工收口' if commit_mode == 'human-sync' else ''}提交{'完成' if res.get('committed') else '无需新增提交'}（HEAD={head_s}，工作树洁净={res['clean_tree']}）",
-            [f"查看 DOC Git 体检: ./gewu atlas --action doc-status --ref {vref}", "直接向人类汇报现状"],
-            "已按 116 规范确认并保留人类手工修改/删除结果入库历史且保持 Git 树干净，同时排除临时收件箱、抓源目录、冷归档与回收区。",
+            f"Vault {vref} DOC 轨 Git {'状态 4 人工收口' if commit_mode == 'human-sync' else ''}提交{'完成' if res.get('committed') else '无需新增提交'}（HEAD={head_s}，工作树洁净={res['clean_tree']}{rs_hint}）",
+            [
+                f"查看 DOC 与远端状态: ./gewu atlas --action doc-status --ref {vref}",
+                f"显式双向同步: ./gewu atlas --action doc-sync --ref {vref}",
+                "直接向人类汇报现状",
+            ],
+            "已按 116 规范保留人类手工修改/删除结果并执行统一 DOC+GitHub 策略（包含 00-DropZone，排除 .obsidian/source/归档/回收区）；远端离线或分叉时本地提交仍保全。",
             terminal=True,
         )
         return 0, _envelope(True, "OK_DOC_COMMIT", cap, data=res), sealed_paths
+
+    if action == "doc-sync":
+        direction = str(args.get("direction") or "both").strip().lower() or "both"
+        if direction not in ("both", "pull", "push"):
+            raise VaultStoreError("E_PARAM_INVALID", "doc-sync 的 --direction 仅支持 both|pull|push", exit_code=1)
+        bootstrap = str(args.get("bootstrap") or "").strip().lower()
+        if bootstrap not in ("", "adopt-remote"):
+            raise VaultStoreError("E_PARAM_INVALID", "doc-sync 的 --bootstrap 仅支持 adopt-remote", exit_code=1)
+        actor = str(args.get("by") or args.get("agent") or "Agent").strip() or "Agent"
+        force_sync = bool(args.get("force", False))
+
+        remote_cfg = get_vault_doc_remote(state_dir, vref, vdir, fetch=False)
+        if not remote_cfg.get("configured"):
+            cap = _guard(
+                "INPUT_REQUIRED",
+                f"E_DOC_REMOTE_UNCONFIGURED: Vault {vref} 尚未绑定 GitHub/Git 远端仓库",
+                f"请先执行 ./gewu atlas --action doc-remote --ref {vref} --remote_url <https://github.com/owner/repo.git> --branch main --auto_push true 后再同步。",
+                "GUARD: INPUT_REQUIRED | 未配置远端不可盲目同步",
+            )
+            return 1, _envelope(False, "E_DOC_REMOTE_UNCONFIGURED", cap, data={"vault_ref": vref, "configured": False, "path_sealed": True}), sealed_paths
+
+        pre_state = inspect_vault_doc_git_state(state_dir, vref, vdir, note_reg=note_reg)
+        dirty_before = int(pre_state.get("dirty_count", 0))
+        local_commit_info: Optional[Dict[str, Any]] = None
+
+        if dirty_before > 0 and bootstrap != "adopt-remote":
+            if not force_sync:
+                link_res = engine_vfs_links(vault_dir=vdir, vault_ref=vref, note_reg=note_reg, kek=kek, app_id=app_id, cache_dir=state_dir / "notes_index")
+                blocking_broken, ref_notes = _blocking_broken_links(link_res, note_reg, vref)
+                dangling_cnt = len(blocking_broken)
+                if dangling_cnt > 0:
+                    cap = _guard(
+                        "INPUT_REQUIRED",
+                        f"E_DOC_HUMAN_DELETE_DANGLING_LINKS: 同步前检测到 {dangling_cnt} 处悬空断链，已按 116 状态 2 阻断同步",
+                        (
+                            "严禁恢复或重建已被人类删除的文件！请先清理受影响引用方卡片"
+                            f"（{', '.join(ref_notes[:10]) or '见 vfs-links'}）中的失效双链后再执行 doc-sync；"
+                            "若人类确认按现状强行同步，请加传 --force true。"
+                        ),
+                        "GUARD: INPUT_REQUIRED | 保护人类删除操作 · 禁止还原已删文件",
+                    )
+                    return 1, _envelope(
+                        False,
+                        "E_DOC_HUMAN_DELETE_DANGLING_LINKS",
+                        cap,
+                        data={
+                            "vault_ref": vref,
+                            "requires_approval": True,
+                            "dangling_count": dangling_cnt,
+                            "referencing_note_refs": ref_notes[:20],
+                            "path_sealed": True,
+                        },
+                    ), sealed_paths
+            local_commit_info = run_vault_doc_commit(
+                state_dir=state_dir,
+                vault_ref=vref,
+                vault_dir=vdir,
+                agent=actor,
+                ticket_id=ticket_id_arg or "",
+                reason=str(args.get("reason") or "pre-sync DOC checkpoint"),
+                phase="post",
+                commit_mode="human-sync" if pre_state.get("has_deletions") else "standard",
+                push=False,
+            )
+
+        sync_res = sync_vault_doc_remote(
+            state_dir=state_dir,
+            vault_ref=vref,
+            vault_dir=vdir,
+            direction=direction,
+            bootstrap=bootstrap,
+            allow_rebase=True,
+            force=force_sync,
+        )
+        sync_res["vault_ref"] = vref
+        sync_res["direction"] = direction
+        sync_res["local_commit"] = local_commit_info
+        sync_res["path_sealed"] = True
+
+        if not sync_res.get("synced"):
+            st = str(sync_res.get("status") or "remote_error")
+            code = f"E_DOC_SYNC_{st.upper()}"
+            detail = str(sync_res.get("detail") or "远端同步受阻")
+            if st == "unrelated_histories":
+                guidance = f"请确认远端内容后执行 ./gewu atlas --action doc-sync --ref {vref} --bootstrap adopt-remote 对齐远端历史（严禁强推覆盖远端）。"
+            elif st == "auth_required":
+                guidance = "请在终端执行 gh auth login && gh auth setup-git 完成认证后重试 doc-sync。"
+            else:
+                guidance = detail
+            cap = _guard("INPUT_REQUIRED", f"{code}: {detail}", guidance, "GUARD: INPUT_REQUIRED | Fail-Closed 防覆盖保护")
+            return 1, _envelope(False, code, cap, data=sync_res), sealed_paths
+
+        if sync_res.get("head_changed"):
+            sync_res["reconciled_index"] = _reconcile_registries_after_remote_pull(
+                vdir=vdir, vref=vref, state_dir=state_dir, note_reg=note_reg, proj_reg=proj_reg, kek=kek, app_id=app_id
+            )
+            sync_res["added_layout_dirs_count"] = sync_vault_layout_dirs(vdir)
+
+        post_status = doc_git_status_summary(state_dir, vref, vdir, note_reg=note_reg)
+        sync_res["clean_tree"] = bool(post_status.get("clean"))
+        sync_res["dirty_count_after"] = int(post_status.get("dirty_count", 0))
+        cap = _triad(
+            f"Vault {vref} DOC 轨与远端同步完成（status={sync_res.get('status')}，HEAD={sync_res.get('head_short') or 'clean'}，branch={sync_res.get('branch')}）",
+            [
+                f"查看同步后状态: ./gewu atlas --action doc-status --ref {vref}",
+                f"列出库内笔记: ./gewu atlas --action note-list --ref {vref}",
+                "直接向人类汇报现状",
+            ],
+            "已按统一 DOC+GitHub 策略完成同步并自动刷新 KEK 课题与笔记索引，严禁 force push 覆盖远端历史。",
+            terminal=True,
+        )
+        return 0, _envelope(True, "OK_DOC_SYNC", cap, data=sync_res), sealed_paths
 
     if _is_non_mutating_vault_op(action, args):
         if ticket_id_arg:
@@ -2557,7 +3174,8 @@ def _run_governed_vault_action(
         "project-merge", "project-unpublish", "trash-purge", "retention-sweep",
     }
     targeted_rels: Optional[List[str]] = None
-    if record_diff_actions and action == "note-update":
+    post_targeted_create = False
+    if record_diff_actions and action in ("note-update", "note-patch"):
         cand_refs: List[str] = []
         if args.get("note_ref"):
             cand_refs.extend([x.strip() for x in str(args["note_ref"]).split(",") if x.strip()])
@@ -2577,8 +3195,11 @@ def _run_governed_vault_action(
             resolved_rels = [hmap_inv[r] for r in dict.fromkeys(cand_refs) if r in hmap_inv]
             if len(resolved_rels) == len(dict.fromkeys(cand_refs)):
                 targeted_rels = resolved_rels
+    elif record_diff_actions and action == "note-create":
+        # note-create uses O_EXCL new-file creation; avoid O(N) full-vault pre-scan.
+        post_targeted_create = True
 
-    if not record_diff_actions:
+    if not record_diff_actions or post_targeted_create:
         pre_snap = {}
     elif targeted_rels is not None:
         pre_snap = capture_targeted_snapshot(vdir, targeted_rels)
@@ -2607,8 +3228,7 @@ def _run_governed_vault_action(
         sealed_paths=sealed_paths,
     )
     data = env.get("data") if isinstance(env.get("data"), dict) else {}
-    if rc != 0 or bool(data.get("requires_approval")):
-        return rc, env, ret_sealed
+    is_partial_or_paused = (rc != 0) or bool(data.get("requires_approval"))
 
     # Resolve final bound ticket info from self-managed actions if applicable
     doc_tinfo = pre_ticket
@@ -2618,12 +3238,26 @@ def _run_governed_vault_action(
     elif not bound_tid and isinstance(data.get("ticket_id"), str):
         bound_tid = str(data["ticket_id"])
 
-    if not record_diff_actions:
+    if post_targeted_create and data.get("note_ref"):
+        try:
+            _created_rec = note_reg.resolve_handle(vref, str(data["note_ref"]).strip())
+            _created_rel = str(_created_rec.get("note_rel_path") or "").strip()
+            if _created_rel:
+                targeted_rels = [_created_rel]
+        except Exception:
+            targeted_rels = None
+
+    should_collect_diff = record_diff_actions and (
+        not is_partial_or_paused
+        or (action == "batch" and int(data.get("succeeded") or 0) > 0)
+    )
+    if not should_collect_diff:
         changes = []
     elif targeted_rels is not None:
         changes = _collect_targeted_changes(vdir, pre_snap, targeted_rels)
     else:
         changes = _collect_vault_changes(vdir, pre_snap, include_journal=include_journal, cache_dir=chg_reg.base_dir)
+
     extra_updates: Dict[str, Any] = {}
     if changes:
         chg_summary = chg_reg.record_change(
@@ -2648,11 +3282,27 @@ def _run_governed_vault_action(
                     f"变更句柄 `{chg_summary['change_id']}`，撤回：`{chg_summary['undo_hint']}`"
                 ),
                 actor=actor,
-                mark_done=auto_created_ticket,
+                mark_done=auto_created_ticket and not bool(data.get("requires_approval")),
             )
             extra_updates["doc_ticket"] = {k: v for k, v in prog.items() if k != "ticket_rel_path"}
     elif doc_tinfo is not None and not self_managed_doc and not is_slip:
-        extra_updates["doc_ticket"] = {k: v for k, v in doc_tinfo.items() if k != "ticket_rel_path"}
+        if is_partial_or_paused and auto_created_ticket and not bool(data.get("requires_approval")):
+            prog = update_doc_ticket_progress(
+                ws_root,
+                vdir,
+                ticket_info=doc_tinfo,
+                note=f"{action} 未产生落盘改动（code={env.get('code')}），自动收口工单",
+                actor=actor,
+                mark_done=True,
+            )
+            extra_updates["doc_ticket"] = {k: v for k, v in prog.items() if k != "ticket_rel_path"}
+        else:
+            extra_updates["doc_ticket"] = {k: v for k, v in doc_tinfo.items() if k != "ticket_rel_path"}
+
+    if is_partial_or_paused:
+        if extra_updates:
+            _attach_data_fields(env, extra_updates)
+        return rc, env, ret_sealed
 
     cumul_cnt = len(chg_reg.ticket_touched_files(bound_tid)) if bound_tid else len(changes)
     if (
@@ -2678,13 +3328,24 @@ def _run_governed_vault_action(
     if action in (
         "note-create",
         "note-update",
+        "note-patch",
         "note-promote",
         "atomic-extract",
         "atomic-approve",
         "moc-sync",
         "artifact-adopt",
         "artifact-finalize",
+        "batch",
     ):
+        changed_rels_for_gate = [str(c.get("rel_path") or "") for c in changes if isinstance(c, dict) and c.get("rel_path")]
+        if not changed_rels_for_gate and targeted_rels:
+            changed_rels_for_gate = list(targeted_rels)
+        is_wb_only_change = bool(changed_rels_for_gate) and all(_is_workbench_rel(r) for r in changed_rels_for_gate)
+        is_dirty_only_eligible = bool(changed_rels_for_gate) and (
+            (action in ("note-create", "note-update", "note-patch") and is_wb_only_change)
+            or action == "note-patch"
+            or (action == "batch" and (is_wb_only_change or _is_in_place_batch_only(args)))
+        )
         extra_updates["delivery_gate"] = _piggyback_delivery_gate(
             ws_root=ws_root,
             vdir=vdir,
@@ -2699,6 +3360,8 @@ def _run_governed_vault_action(
             app_id=app_id,
             cache_dir=state_dir / "notes_index",
             batch_key=str(args.get("batch_key") or ticket_id_arg or "").strip(),
+            dirty_only=is_dirty_only_eligible,
+            dirty_rels=changed_rels_for_gate if is_dirty_only_eligible else None,
         )
     _attach_data_fields(env, extra_updates)
     return rc, env, ret_sealed
@@ -3536,26 +4199,42 @@ def _dispatch_vault_action(
             return 0, _envelope(True, "OK_VFS_LINKS", cap, data=res), sealed_paths
 
     if action == "doc-status":
-        git_state = inspect_vault_doc_git_state(state_dir, vref, vdir, note_reg=note_reg)
+        fetch_flag = bool(args.get("fetch", False))
+        git_state = inspect_vault_doc_git_state(state_dir, vref, vdir, note_reg=note_reg, fetch=fetch_flag)
         link_res = engine_vfs_links(vault_dir=vdir, vault_ref=vref, note_reg=note_reg, kek=kek, app_id=app_id, cache_dir=state_dir / "notes_index")
         blocking_broken, ref_notes = _blocking_broken_links(link_res, note_reg, vref)
         dangling_cnt = len(blocking_broken)
         raw_dangling_cnt = int(link_res.get("dangling_count", 0))
         dirty_cnt = int(git_state.get("dirty_count", 0))
         sync_ready = bool(git_state.get("initialized")) and dangling_cnt == 0
+        remote_info = git_state.get("remote_sync") if isinstance(git_state.get("remote_sync"), dict) else {}
+        remote_tag = ""
+        if remote_info.get("configured"):
+            remote_tag = (
+                f"，远端={remote_info.get('branch')}(auto_push={remote_info.get('auto_push')},"
+                f"+{remote_info.get('ahead', 0)}/-{remote_info.get('behind', 0)})"
+            )
+        else:
+            remote_tag = "，远端=未绑定"
         if dirty_cnt == 0:
             rec_state = "CLEAN"
             orbit = [f"查看 Vault 全库体检: ./gewu atlas --action health-check --ref {vref}", "直接向人类汇报现状"]
-            state_desc = f"Vault {vref} DOC Git 工作树干净（HEAD={git_state.get('head_short') or 'init'}，零未提交修改）[只读完成]"
+            if remote_info.get("configured") and (int(remote_info.get("ahead", 0)) > 0 or int(remote_info.get("behind", 0)) > 0 or remote_info.get("unrelated_histories")):
+                orbit.insert(0, f"执行远端同步: ./gewu atlas --action doc-sync --ref {vref}")
+            elif not remote_info.get("configured"):
+                orbit.insert(0, f"绑定 GitHub 远端: ./gewu atlas --action doc-remote --ref {vref} --remote_url <url>")
+            state_desc = f"Vault {vref} DOC Git 工作树干净（HEAD={git_state.get('head_short') or 'init'}，零未提交修改{remote_tag}）[只读完成]"
         elif dangling_cnt == 0:
             rec_state = "STATE_4_HUMAN_SYNC_READY"
             orbit = [
                 f"116 状态 4 收口并保持 Git 树干净: ./gewu atlas --action doc-commit --ref {vref} --mode human-sync",
                 "直接向人类汇报现状",
             ]
+            if remote_info.get("configured"):
+                orbit.insert(1, f"双向同步远端: ./gewu atlas --action doc-sync --ref {vref}")
             state_desc = (
                 f"Vault {vref} 检测到 {dirty_cnt} 项未提交变更（+{git_state.get('added_count', 0)}/~{git_state.get('modified_count', 0)}/"
-                f"-{git_state.get('deleted_count', 0)}/R{git_state.get('renamed_count', 0)}）且知识卡零断链（116 状态 4 可直接收口）[只读完成]"
+                f"-{git_state.get('deleted_count', 0)}/R{git_state.get('renamed_count', 0)}）且知识卡零断链（116 状态 4 可直接收口{remote_tag}）[只读完成]"
             )
         else:
             rec_state = "STATE_2_REPAIR_BEFORE_SYNC"
@@ -3565,7 +4244,7 @@ def _dispatch_vault_action(
                 "直接向人类汇报现状",
             ]
             state_desc = (
-                f"Vault {vref} 检测到 {dirty_cnt} 项未提交变更且存在 {dangling_cnt} 处悬空断链（116 状态 2，严禁恢复已删文件）[只读完成]"
+                f"Vault {vref} 检测到 {dirty_cnt} 项未提交变更且存在 {dangling_cnt} 处悬空断链（116 状态 2，严禁恢复已删文件{remote_tag}）[只读完成]"
             )
         pub = dict(git_state)
         pub.update(
@@ -3797,6 +4476,7 @@ def _dispatch_vault_action(
             vref=vref,
             note_reg=note_reg,
             proj_reg=proj_reg,
+            kek=kek,
             project_ref=project_ref_arg,
             note_ref_arg=str(args.get("note_ref") or "").strip() or None,
             note_refs_arg=args.get("note_refs"),
@@ -4138,6 +4818,275 @@ def _dispatch_vault_action(
         )
         return 0, _envelope(True, "OK_WORKBENCH_PRESET_APPLIED", cap, data=res), sealed_paths
 
+    if action == "project-brief":
+        res, b_paths = engine_project_brief(
+            vault_dir=vdir,
+            vault_ref=vref,
+            note_reg=note_reg,
+            proj_reg=proj_reg,
+            kek=kek,
+            app_id=app_id,
+            project_ref=project_ref_arg,
+            include_slices=bool(args.get("include_slices", False)),
+            max_notes=int(args.get("max_notes") or 200),
+            cache_dir=state_dir / "notes_index",
+        )
+        sealed_paths.extend(b_paths)
+        scope_lbl = f"课题 {project_ref_arg}" if project_ref_arg else f"知识库 {vref}"
+        cap = _triad(
+            f"已生成 {scope_lbl} 一屏全景图（共 {res['total_notes']} 张笔记，返回 {res['returned_notes']} 张核心卡，{res['edge_count']} 条双链边）[只读完成]",
+            [
+                f"按句柄批量精读: ./gewu atlas --action note-get --ref {vref} --note_refs <nte_01,nte_02>",
+                f"跨卡精准 grep: ./gewu atlas --action note-grep --ref {vref} --pattern '<关键词>'",
+                "直接向人类汇报现状",
+            ],
+            "单步汇聚分区统计、卡片句柄与双链骨架；切片默认仅计数以节省上下文（传 --include_slices true 展开）。",
+            terminal=True,
+        )
+        return 0, _envelope(True, "OK_PROJECT_BRIEF", cap, data=res), sealed_paths
+
+    if action == "note-grep":
+        res, g_paths = engine_note_grep(
+            vault_dir=vdir,
+            vault_ref=vref,
+            note_reg=note_reg,
+            kek=kek,
+            app_id=app_id,
+            pattern=str(args.get("pattern") or args.get("query") or ""),
+            regex=bool(args.get("regex", False)),
+            case_sensitive=bool(args.get("case_sensitive", False)),
+            context_lines=int(args["context_lines"]) if args.get("context_lines") is not None else 1,
+            max_matches=int(args.get("max_matches") or 50),
+            zone=args.get("zone"),
+            project_ref=project_ref_arg,
+            proj_reg=proj_reg,
+            doc_type=args.get("doc_type"),
+            private=bool(args.get("private", False)),
+            include_archived=bool(args.get("include_archived", False)),
+            include_workbench=bool(args.get("include_workbench", False)),
+            with_section=bool(args.get("with_section", False)),
+            cache_dir=state_dir / "notes_index",
+        )
+        sealed_paths.extend(g_paths)
+        cap = _triad(
+            f"跨卡精准检索完成（命中 {res['matched_notes']} 篇笔记共 {res['total_matches']} 处匹配）[只读完成]",
+            [
+                f"按行段精读命中卡: ./gewu atlas --action note-get --ref {vref} --note_ref <nte_01> --start_line 1 --end_line 80",
+                "直接向人类汇报现状",
+            ],
+            "仅返回逻辑句柄与行号上下文，零物理路径暴露；默认遵守 private/attic/workbench 访问隔离。",
+            terminal=True,
+        )
+        return 0, _envelope(True, "OK_NOTE_GREP", cap, data=res), sealed_paths
+
+    if action == "batch":
+        _BATCH_ALLOWED = frozenset(
+            {
+                "note-get", "note-list", "note-search", "note-grep", "project-brief",
+                "note-create", "note-update", "note-patch", "note-promote", "note-format",
+                "note-slice", "atomic-extract", "moc-sync", "note-link", "artifact-adopt",
+                "vfs-create", "vfs-move", "vfs-copy", "journal-append", "slip-commit", "slip-update",
+                "health-check", "schema-check", "vfs-links",
+            }
+        )
+        raw_steps = args.get("steps")
+        if raw_steps is None and args.get("batch_json") is not None:
+            bj = args.get("batch_json")
+            try:
+                parsed_bj = json.loads(str(bj)) if isinstance(bj, str) else bj
+            except Exception as exc:
+                raise VaultStoreError("E_PARAM_INVALID", f"--batch_json JSON 解析失败: {exc}", exit_code=1) from exc
+            raw_steps = parsed_bj.get("steps") if isinstance(parsed_bj, dict) else parsed_bj
+        elif isinstance(raw_steps, str):
+            try:
+                raw_steps = json.loads(raw_steps)
+            except Exception as exc:
+                raise VaultStoreError("E_PARAM_INVALID", f"--steps JSON 解析失败: {exc}", exit_code=1) from exc
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise VaultStoreError("E_PARAM_MISSING", "batch 需要提供非空 steps 数组（经 --steps、--batch_json 或 --json-stdin 传入）", exit_code=1)
+        if len(raw_steps) > 50:
+            raise VaultStoreError("E_PARAM_INVALID", "单次 batch 最多允许 50 个步骤", exit_code=1)
+
+        on_error = str(args.get("on_error") or "stop").strip().lower()
+        if on_error not in ("stop", "continue"):
+            raise VaultStoreError("E_PARAM_INVALID", "--on_error 仅支持 stop 或 continue", exit_code=1)
+
+        step_ref_re = re.compile(r"\$([A-Za-z_][A-Za-z0-9_-]*)\.([A-Za-z_][A-Za-z0-9_]*)")
+        step_outputs: Dict[str, Dict[str, Any]] = {}
+
+        def _resolve_batch_val(val: Any) -> Any:
+            if isinstance(val, str):
+                def _sub(m: re.Match[str]) -> str:
+                    sid_ref, fld = m.group(1), m.group(2)
+                    if sid_ref not in step_outputs or fld not in step_outputs[sid_ref]:
+                        raise VaultStoreError("E_BATCH_REF_NOT_FOUND", f"batch 前序句柄引用无法解析: ${sid_ref}.{fld}", exit_code=1)
+                    return str(step_outputs[sid_ref][fld])
+                return step_ref_re.sub(_sub, val)
+            if isinstance(val, list):
+                return [_resolve_batch_val(x) for x in val]
+            if isinstance(val, dict):
+                return {k: _resolve_batch_val(v) for k, v in val.items()}
+            return val
+
+        results_log: List[Dict[str, Any]] = []
+        stopped_at: Optional[str] = None
+        requires_approval_hit = False
+        succeeded = 0
+        failed = 0
+        for idx, step in enumerate(raw_steps, start=1):
+            if not isinstance(step, dict):
+                raise VaultStoreError("E_PARAM_INVALID", f"batch 第 {idx} 步必须为对象", exit_code=1)
+            sid_lbl = str(step.get("id") or f"step_{idx}").strip()
+            s_act = str(step.get("action") or "").strip()
+            if s_act not in _BATCH_ALLOWED:
+                raise VaultStoreError(
+                    "E_BATCH_ACTION_FORBIDDEN",
+                    f"batch 步骤 {sid_lbl} 的动作 '{s_act}' 不在批处理白名单内（高危/需单独人工拍板动作禁止混入 batch）",
+                    exit_code=1,
+                )
+            s_args_raw = step.get("args") if isinstance(step.get("args"), dict) else {}
+            s_args: Dict[str, Any] = {
+                "action": s_act,
+                "ref": vref,
+                "by": args.get("by"),
+                "agent": args.get("agent"),
+                "project_ref": project_ref_arg,
+                "scope": scope_arg,
+                "ticket_id": ticket_id_arg,
+            }
+            resolved_step_args = _resolve_batch_val(s_args_raw)
+            for k, v in resolved_step_args.items():
+                nk = str(k).replace("-", "_")
+                if nk not in KNOWN_SLOTS:
+                    raise VaultStoreError("E_PARAM_UNKNOWN_FIELD", f"batch 步骤 {sid_lbl} 含未知字段: {k}", exit_code=2)
+                slot_kind = KNOWN_SLOTS.get(nk)
+                if slot_kind == "bool" and not isinstance(v, bool):
+                    v = _coerce_bool(v, nk)
+                elif slot_kind == "int" and v is not None and not isinstance(v, int):
+                    try:
+                        v = int(v)
+                    except (ValueError, TypeError) as exc:
+                        raise VaultStoreError("E_PARAM_INVALID", f"batch 步骤 {sid_lbl} 参数 --{nk} 必须为整数", exit_code=1) from exc
+                s_args[nk] = v
+            s_args["_provided_keys"] = sorted(set(s_args.keys()))
+            s_proj_ref = str(s_args.get("project_ref") or "").strip() or None
+            s_scope = str(s_args.get("scope") or "auto").strip() or "auto"
+            try:
+                s_rc, s_env, s_sealed = _dispatch_vault_action(
+                    action=s_act,
+                    args=s_args,
+                    ws_root=ws_root,
+                    state_dir=state_dir,
+                    vdir=vdir,
+                    vref=vref,
+                    kek=kek,
+                    app_id=app_id,
+                    note_reg=note_reg,
+                    proj_reg=proj_reg,
+                    project_ref_arg=s_proj_ref,
+                    scope_arg=s_scope,
+                    ticket_id_arg=ticket_id_arg,
+                    sealed_paths=[],
+                )
+                for sp in s_sealed:
+                    if sp not in sealed_paths:
+                        sealed_paths.append(sp)
+                s_data = s_env.get("data") if isinstance(s_env.get("data"), dict) else {}
+                s_export = dict(s_data)
+                if s_act in ("note-grep", "note-search", "note-list"):
+                    hit_list = s_data.get("results") or s_data.get("notes") or s_data.get("hits") or []
+                    if isinstance(hit_list, list):
+                        found_refs = [
+                            str(it.get("note_ref") or "").strip()
+                            for it in hit_list
+                            if isinstance(it, dict) and str(it.get("note_ref") or "").strip()
+                        ]
+                        uniq_refs = list(dict.fromkeys(found_refs))
+                        s_export["note_refs"] = ",".join(uniq_refs)
+                        if uniq_refs:
+                            s_export["top_note_ref"] = uniq_refs[0]
+                step_outputs[sid_lbl] = s_export
+                s_entry: Dict[str, Any] = {
+                    "id": sid_lbl,
+                    "action": s_act,
+                    "ok": s_rc == 0,
+                    "code": s_env.get("code"),
+                    "data": s_data,
+                }
+                results_log.append(s_entry)
+                if s_rc == 0:
+                    succeeded += 1
+                else:
+                    failed += 1
+                if bool(s_data.get("requires_approval")):
+                    requires_approval_hit = True
+                    stopped_at = sid_lbl
+                    break
+                if s_rc != 0 and on_error == "stop":
+                    stopped_at = sid_lbl
+                    break
+            except VaultStoreError as exc:
+                failed += 1
+                results_log.append(
+                    {
+                        "id": sid_lbl,
+                        "action": s_act,
+                        "ok": False,
+                        "code": exc.code,
+                        "error": exc.message,
+                    }
+                )
+                hard_stop = exc.code in ("E_PRE_REVIEW_REQUIRED", "E_DOMAIN_FROZEN", "E_JOURNAL_PROTECTED", "E_SECURITY_VIOLATION")
+                if hard_stop or on_error == "stop":
+                    stopped_at = sid_lbl
+                    break
+
+        all_ok = (failed == 0) and (not requires_approval_hit)
+        is_ro_batch = _is_read_only_batch(args)
+        batch_data: Dict[str, Any] = {
+            "vault_ref": vref,
+            "read_only": is_ro_batch,
+            "total_steps": len(raw_steps),
+            "executed_steps": len(results_log),
+            "succeeded": succeeded,
+            "failed": failed,
+            "stopped_at": stopped_at,
+            "requires_approval": requires_approval_hit,
+            "results": results_log,
+            "path_sealed": True,
+        }
+        if requires_approval_hit:
+            cap = _guard(
+                "INPUT_REQUIRED",
+                f"batch 在步骤 {stopped_at} 触发人工审批门禁（已完成 {succeeded}/{len(raw_steps)} 步）",
+                "呈报人类确认后再继续后续步骤，严禁跳过审批。",
+                "GUARD: INPUT_REQUIRED | batch 已在门禁处安全中止",
+            )
+            return 0, _envelope(True, "OK_BATCH_PAUSED_APPROVAL", cap, data=batch_data), sealed_paths
+        if not all_ok:
+            cap = _guard(
+                "PARAM_FIX",
+                f"batch 执行部分失败（成功 {succeeded}，失败 {failed}，停于 {stopped_at}）",
+                "查看 results 中失败步骤的错误码修正后重试剩余步骤。",
+                "已完成步骤均已落盘并记入统一变更句柄（可按需 undo）。",
+            )
+            return 1, _envelope(False, "E_BATCH_PARTIAL_FAILED", cap, data=batch_data), sealed_paths
+        if is_ro_batch:
+            cap = _triad(
+                f"batch 只读合批完成（{succeeded}/{len(raw_steps)} 步全部成功）[只读完成]",
+                ["按需继续精读或局部补丁改写", "直接向人类汇报现状"],
+                "纯只读快路径：共享锁、零 DOC 票、零快照与零写闸门开销，进程内复用热索引。",
+                terminal=True,
+            )
+        else:
+            cap = _triad(
+                f"batch 事务批处理完成（{succeeded}/{len(raw_steps)} 步全部成功）",
+                ["按需继续或向人类汇报交付结果"],
+                "整批共享单次状态锁、单张 DOC 票、单份合并变更快照与末尾合并验货。",
+                terminal=True,
+            )
+        return 0, _envelope(True, "OK_BATCH_DONE", cap, data=batch_data), sealed_paths
+
     if action.startswith("project-"):
         return _handle_project_action(
             action=action,
@@ -4168,15 +5117,24 @@ def _dispatch_vault_action(
             head=args.get("head"),
             tail=args.get("tail"),
             section=args.get("section"),
+            outline=bool(args.get("outline", False)),
             cache_dir=state_dir / "notes_index",
         )
         sealed_paths.extend(note_paths)
-        cap = _triad(
-            f"已批量读取 {batch_res['count']} 张笔记 [QA_GATE: GROUNDED (60/60)] [只读完成]",
-            ["熔炼成文并标注 nte_XX 句柄后向人类交付（L3 综合研究优先调 Subagent 盲审，无则按完整性/真实性/可读性自评）"],
-            "单步返回多张卡片完整正文与 content_sha256。[QA_GATE: GROUNDED (60/60)] 请写成连贯分析文章（禁罗列搜索片段，禁露物理路径）。",
-            terminal=True,
-        )
+        if bool(args.get("outline", False)):
+            cap = _triad(
+                f"已批量提取 {batch_res['count']} 张笔记大纲与行号区间 [只读完成]",
+                [f"按需拉取目标章节: ./gewu atlas --action note-get --ref {vref} --note_ref <nte_01> --section '<标题>'"],
+                "outline 模式省略全文正文以极度节省上下文；如需回答细节请按 --section 或 --start_line/--end_line 精读。",
+                terminal=True,
+            )
+        else:
+            cap = _triad(
+                f"已批量读取 {batch_res['count']} 张笔记 [QA_GATE: GROUNDED (60/60)] [只读完成]",
+                ["熔炼成文并标注 nte_XX 句柄后向人类交付（L3 综合研究优先调 Subagent 盲审，无则按完整性/真实性/可读性自评）"],
+                "单步返回多张卡片完整正文与 content_sha256。[QA_GATE: GROUNDED (60/60)] 请写成连贯分析文章（禁罗列搜索片段，禁露物理路径）。",
+                terminal=True,
+            )
         return 0, _envelope(True, "OK_NOTE_GET_BATCH", cap, data=batch_res), sealed_paths
 
     if action == "note-update" and (args.get("batch_json") or (args.get("note_refs") and not note_ref) or "," in note_ref):
@@ -4195,6 +5153,7 @@ def _dispatch_vault_action(
             status=args.get("status") if "status" in argv_keys else None,
             content=args.get("content") if "content" in argv_keys else None,
             set_meta=args.get("set_meta") if "set_meta" in argv_keys else None,
+            allow_managed_block=bool(args.get("allow_managed_block", False)),
             cache_dir=state_dir / "notes_index",
         )
         sealed_paths.extend(note_paths)
@@ -4226,6 +5185,45 @@ def _dispatch_vault_action(
         )
         return 0, _envelope(True, "OK_LINKS_FIXED", cap, data=res), sealed_paths
 
+    if action == "note-patch" and (args.get("note_refs") or "," in note_ref):
+        argv_keys = set(args.get("_provided_keys", args))
+        batch_refs = args.get("note_refs") or note_ref
+        is_dry = bool(args.get("dry_run", False))
+        bres, bpaths = engine_note_patch_batch(
+            vault_dir=vdir,
+            vault_ref=vref,
+            note_refs=batch_refs,
+            note_reg=note_reg,
+            kek=kek,
+            app_id=app_id,
+            old_text=args.get("old_text") if "old_text" in argv_keys else None,
+            new_text=args.get("new_text") if "new_text" in argv_keys else None,
+            replace_all=bool(args.get("replace_all", False)),
+            section=args.get("section") if "section" in argv_keys else None,
+            mode=args.get("mode") if "mode" in argv_keys else None,
+            content=args.get("content") if "content" in argv_keys else None,
+            ops_json=args.get("ops_json") if "ops_json" in argv_keys else None,
+            allow_managed_block=bool(args.get("allow_managed_block", False)),
+            title=args.get("title") if "title" in argv_keys else None,
+            summary=args.get("summary") if "summary" in argv_keys else None,
+            tags=args.get("tags") if "tags" in argv_keys else None,
+            status=args.get("status") if "status" in argv_keys else None,
+            set_meta=args.get("set_meta") if "set_meta" in argv_keys else None,
+            dry_run=is_dry,
+            cache_dir=state_dir / "notes_index",
+        )
+        sealed_paths.extend(bpaths)
+        verb = "预演跨卡补丁" if is_dry else "已完成跨卡批量补丁"
+        code = "OK_NOTE_PATCH_BATCH_DRY_RUN" if is_dry else ("OK_NOTE_PATCH_BATCH" if bres["failed"] == 0 else "E_NOTE_PATCH_BATCH_PARTIAL")
+        ok_flag = (bres["failed"] == 0)
+        cap = _triad(
+            f"{verb}（共 {bres['total']} 篇：命中 {bres['patched']}，跳过 {bres['skipped']}，受阻 {bres['failed']}）",
+            ["确认无误后去掉 --dry_run 正式落盘" if is_dry else "按需核验或向人类汇报现状"],
+            "逐卡校验 21-Library 原文只读、受控块与日记人类区保护；未命中目标文本的卡片自动跳过不中断。",
+            terminal=True,
+        )
+        return (0 if ok_flag else 1), _envelope(ok_flag, code, cap, data=bres), sealed_paths
+
     if not note_ref:
         cap = _guard(
             "PARAM_FIX",
@@ -4238,6 +5236,7 @@ def _dispatch_vault_action(
         return 1, _envelope(False, "E_PARAM_MISSING", cap, missing_slots=["note_ref"]), sealed_paths
 
     if action == "note-get":
+        is_outline = bool(args.get("outline", False))
         pub, note_paths = engine_note_get(
             vault_dir=vdir,
             vault_ref=vref,
@@ -4251,16 +5250,73 @@ def _dispatch_vault_action(
             head=args.get("head"),
             tail=args.get("tail"),
             section=args.get("section"),
+            outline=is_outline,
             cache_dir=state_dir / "notes_index",
         )
         sealed_paths.extend(note_paths)
+        if is_outline:
+            cap = _triad(
+                f"已提取笔记 {note_ref} 大纲（标题「{pub['title']}」，共 {len(pub.get('toc_outline') or [])} 个标题节，{pub.get('total_lines', 0)} 行）[只读完成]",
+                [
+                    f"按章节精读: ./gewu atlas --action note-get --ref {vref} --note_ref {note_ref} --section '<标题>'",
+                    f"局部补丁改写: ./gewu atlas --action note-patch --ref {vref} --note_ref {note_ref} --section '<标题>' --content '<新正文>'",
+                ],
+                "outline 模式仅返 Frontmatter 与标题行号范围，避免长文撑爆上下文。",
+                terminal=True,
+            )
+        else:
+            cap = _triad(
+                f"已读取笔记 {note_ref}（标题「{pub['title']}」，分区 {pub['zone']}）[QA_GATE: GROUNDED (60/60)] [只读完成]",
+                [f"局部更新笔记: ./gewu atlas --action note-patch --ref {vref} --note_ref {note_ref} --old_text '<旧片段>' --new_text '<新片段>'", "直接向人类汇报现状"],
+                "正文与正反向双链已通过逻辑句柄提取，无需关心具体子目录位置。[QA_GATE: GROUNDED (60/60)] 作答时请标注句柄并保持散文连贯、零物理路径。",
+                terminal=True,
+            )
+        return 0, _envelope(True, "OK_NOTE_GET", cap, data=pub), sealed_paths
+
+    if action == "note-patch":
+        argv_keys = set(args.get("_provided_keys", args))
+        is_dry = bool(args.get("dry_run", False))
+        pub, note_paths = engine_note_patch(
+            vault_dir=vdir,
+            vault_ref=vref,
+            note_ref=note_ref,
+            note_reg=note_reg,
+            kek=kek,
+            app_id=app_id,
+            old_text=args.get("old_text") if "old_text" in argv_keys else None,
+            new_text=args.get("new_text") if "new_text" in argv_keys else None,
+            replace_all=bool(args.get("replace_all", False)),
+            section=args.get("section") if "section" in argv_keys else None,
+            mode=args.get("mode") if "mode" in argv_keys else None,
+            content=args.get("content") if "content" in argv_keys else None,
+            ops_json=args.get("ops_json") if "ops_json" in argv_keys else None,
+            allow_managed_block=bool(args.get("allow_managed_block", False)),
+            title=args.get("title") if "title" in argv_keys else None,
+            summary=args.get("summary") if "summary" in argv_keys else None,
+            tags=args.get("tags") if "tags" in argv_keys else None,
+            status=args.get("status") if "status" in argv_keys else None,
+            set_meta=args.get("set_meta") if "set_meta" in argv_keys else None,
+            expected_sha256=str(args.get("expected_sha256") or "").strip() or None,
+            dry_run=is_dry,
+            cache_dir=state_dir / "notes_index",
+        )
+        sealed_paths.extend(note_paths)
+        ops_str = ", ".join(pub.get("patch_ops_applied") or [])
+        if is_dry:
+            cap = _triad(
+                f"已预演补丁 {note_ref}（模拟应用 {ops_str}，字数 {pub.get('chars_before')}→{pub.get('chars_after')}，未落盘）[只读完成]",
+                ["去掉 --dry_run 正式落盘", "直接向人类汇报现状"],
+                "预演已通过受控块、只读区与 Schema 校验，零磁盘写入。",
+                terminal=True,
+            )
+            return 0, _envelope(True, "OK_NOTE_PATCH_DRY_RUN", cap, data=pub), sealed_paths
         cap = _triad(
-            f"已读取笔记 {note_ref}（标题「{pub['title']}」，分区 {pub['zone']}）[QA_GATE: GROUNDED (60/60)] [只读完成]",
-            [f"更新笔记: ./gewu atlas --action note-update --ref {vref} --note_ref {note_ref} --summary <新摘要>", "直接向人类汇报现状"],
-            "正文与正反向双链已通过逻辑句柄提取，无需关心具体子目录位置。[QA_GATE: GROUNDED (60/60)] 作答时请标注句柄并保持散文连贯、零物理路径。",
+            f"已局部补丁更新笔记 {note_ref}（应用 {ops_str}，字数 {pub.get('chars_before')}→{pub.get('chars_after')}）",
+            [f"按需查看大纲: ./gewu atlas --action note-get --ref {vref} --note_ref {note_ref} --outline true", "直接向人类汇报现状"],
+            "已校验受控块保护、YAML Schema 与双链归属并原子写回，无需整篇重写。",
             terminal=True,
         )
-        return 0, _envelope(True, "OK_NOTE_GET", cap, data=pub), sealed_paths
+        return 0, _envelope(True, "OK_NOTE_PATCHED", cap, data=pub), sealed_paths
 
     if action == "note-update":
         argv_keys = set(args.get("_provided_keys", args))
@@ -4278,6 +5334,7 @@ def _dispatch_vault_action(
             content=args.get("content") if "content" in argv_keys else None,
             set_meta=args.get("set_meta") if "set_meta" in argv_keys else None,
             expected_sha256=str(args.get("expected_sha256") or "").strip() or None,
+            allow_managed_block=bool(args.get("allow_managed_block", False)),
             cache_dir=state_dir / "notes_index",
         )
         sealed_paths.extend(note_paths)
@@ -4418,9 +5475,9 @@ def _dispatch_vault_action(
             )
             sealed_paths.extend(rep_paths)
             cap = _triad(
-                f"已校准 TOC {note_ref} 同域台账（count={pub['repaired_count']}）",
+                f"已校准 TOC {note_ref} 单向溯源统计（derived_atomics={pub['repaired_count']}）",
                 [f"回读 TOC: ./gewu atlas --action note-get --ref {vref} --note_ref {note_ref}", "汇报现状"],
-                "已按同域原子卡重建 extracted_to，保持外域只读。",
+                "已按单向流动契约清理旧 extracted_to 并实时反查下游原子卡。",
                 terminal=True,
             )
             return 0, _envelope(True, "OK_ATOMIC_LEDGER_REPAIRED", cap, data=pub), sealed_paths
@@ -4456,7 +5513,7 @@ def _dispatch_vault_action(
                 f"查原子卡: ./gewu atlas --action note-list --ref {vref} --zone atomics",
                 "supervised 停待批准；auto 可核对后继续",
             ],
-            f"已写 provenance/extracted_to/日志。{warn_msg}".strip(),
+            f"已写单向 sources/slices 与日志（上游原文只读零回写）。{warn_msg}".strip(),
             terminal=False,
         )
         if res["review_mode"] == "supervised":
@@ -5248,17 +6305,23 @@ def _emit_dual_source_log(
         pass
 
 
-def main() -> int:
-    raw_argv = sys.argv[1:]
+def run_cli_request(
+    raw_argv: List[str],
+    *,
+    stdin_text: Optional[str] = None,
+    hot_registries: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, str]:
+    """Execute one CLI request in-process and return `(exit_code, json_stdout_line)`.
+
+    Shared by cold CLI `main()`, `AtlasHotDaemon`, and `atlas_mcp_server.py`.
+    """
     state_dir, log_dir = _runtime_dirs()
     breaker_path = state_dir / "atlas-breaker.json"
     ws_root = _workspace_root()
 
     if any(t in ("--template", "--describe", "-h", "--help") for t in raw_argv):
-        sys.stdout.write(json.dumps(_template_payload(raw_argv), ensure_ascii=False) + "\n")
-        return 0
+        return 0, json.dumps(_template_payload(raw_argv), ensure_ascii=False) + "\n"
 
-    stdin_text = sys.stdin.read() if _needs_stdin(raw_argv) and not sys.stdin.isatty() else None
     session_fp = _extract_session_fp(raw_argv, stdin_text)
     fp = _fingerprint(raw_argv, stdin_text)
     bstate = load_session_breaker(breaker_path, session_fp)
@@ -5275,14 +6338,13 @@ def main() -> int:
             "立即停止重试并向人类汇报现状。",
             "GUARD: HALTED | 禁止重试",
         )
-        sys.stdout.write(json.dumps(_envelope(False, "E_HALT_LOOP_DETECTED", cap), ensure_ascii=False) + "\n")
-        return 2
+        return 2, json.dumps(_envelope(False, "E_HALT_LOOP_DETECTED", cap), ensure_ascii=False) + "\n"
 
     try:
         args = _parse_channels(raw_argv, stdin_text)
         action = str(args.get("action", "")).strip()
         is_ro = _is_non_mutating_vault_op(action, args)
-        code, env, sealed_paths = _execute_action(args)
+        code, env, sealed_paths = _execute_action(args, hot_registries=hot_registries)
         if args.get("_vault_selection"):
             env.setdefault("data", {})["vault_selection"] = args["_vault_selection"]
         _assert_zero_path_leak(env, ws_root, sealed_paths)
@@ -5336,8 +6398,7 @@ def main() -> int:
                         record_session_reads(state_dir, session_fp, v_get, read_refs)
         maybe_compact_capsule(env, consecutive_same_ok=next_ok_streak)
         _assert_zero_path_leak(env, ws_root, sealed_paths)
-        sys.stdout.write(json.dumps(env, ensure_ascii=False) + "\n")
-        return code
+        return code, json.dumps(env, ensure_ascii=False) + "\n"
     except VaultStoreError as exc:
         next_streak = fail_streak + 1
         save_session_breaker(
@@ -5400,8 +6461,7 @@ def main() -> int:
         )
         out_code = 2 if mode == "HALTED" else exc.exit_code
         err_env = _envelope(False, err_code, cap)
-        sys.stdout.write(json.dumps(err_env, ensure_ascii=False) + "\n")
-        return out_code
+        return out_code, json.dumps(err_env, ensure_ascii=False) + "\n"
     except Exception:  # noqa: BLE001
         log_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(log_dir, 0o700)
@@ -5421,8 +6481,18 @@ def main() -> int:
             "立即停止重试并向人类汇报。",
             "GUARD: HALTED | 禁止重试",
         )
-        sys.stdout.write(json.dumps(_envelope(False, "E_HALT_INTERNAL", cap), ensure_ascii=False) + "\n")
-        return 2
+        return 2, json.dumps(_envelope(False, "E_HALT_INTERNAL", cap), ensure_ascii=False) + "\n"
+
+
+def main() -> int:
+    raw_argv = sys.argv[1:]
+    if _EARLY_STDIN_LOADED:
+        stdin_text = _EARLY_STDIN_CACHE
+    else:
+        stdin_text = sys.stdin.read() if _needs_stdin(raw_argv) and not sys.stdin.isatty() else None
+    code, out_line = run_cli_request(raw_argv, stdin_text=stdin_text)
+    sys.stdout.write(out_line)
+    return code
 
 
 if __name__ == "__main__":

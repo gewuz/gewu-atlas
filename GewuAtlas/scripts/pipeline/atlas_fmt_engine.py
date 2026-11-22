@@ -456,7 +456,6 @@ def _hydrate_output_card(
                 'channel: "fmt"\n'
                 f'original_file: "{fm_scalar(orig_name or "")}"\n'
                 "processed: false\n"
-                "extracted_to: []\n"
             )
         fm = (
             "---\n"

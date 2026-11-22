@@ -94,16 +94,22 @@ def validate_url_security(url: str):
 
 def safe_open(request, *, timeout):
     # Revalidate every redirect, including image requests. Initial validation alone is insufficient.
-    from url_ingest_helper import check_url
+    from url_ingest_helper import _verify_connected_peer_ip, check_url
     class SafeRedirect(urllib.request.HTTPRedirectHandler):
         http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             check_url(VAULT_ROOT, newurl)
             return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
     check_url(VAULT_ROOT, request.full_url)
-    opener = urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPSHandler(context=SSL_CONTEXT))
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        SafeRedirect(),
+        urllib.request.HTTPSHandler(context=SSL_CONTEXT),
+    )
     response = opener.open(request, timeout=timeout)
-    try: check_url(VAULT_ROOT, response.geturl())
+    try:
+        check_url(VAULT_ROOT, response.geturl())
+        _verify_connected_peer_ip(VAULT_ROOT, response)
     except Exception:
         response.close()
         raise
@@ -184,10 +190,13 @@ def scrape_with_local_python(url: str) -> dict:
 
     raw_bytes = None
     encoding = "utf-8"
+    max_html_bytes = 15 * 1024 * 1024
     try:
         with safe_open(req, timeout=15) as resp:
             content_type = resp.headers.get("Content-Type", "")
-            raw_bytes = resp.read()
+            raw_bytes = resp.read(max_html_bytes + 1)
+            if len(raw_bytes) > max_html_bytes:
+                raise ValueError("网页响应体超过 15 MiB 安全上限")
             if "charset=" in content_type:
                 encoding = content_type.split("charset=")[-1].strip()
     except Exception as e:
@@ -303,10 +312,11 @@ def download_and_replace_images(
                 print(f"  [-] 图片 URL 安全校验拦截，保留原链接: {e}")
                 continue
             req = urllib.request.Request(img_url, headers=headers)
+            max_img_bytes = 20 * 1024 * 1024
             try:
                 with safe_open(req, timeout=10) as resp:
-                    img_data = resp.read()
-                    if len(img_data) >= 200:
+                    img_data = resp.read(max_img_bytes + 1)
+                    if 200 <= len(img_data) <= max_img_bytes:
                         dest_path.write_bytes(img_data)
                         downloaded_count += 1
                     else:
@@ -450,7 +460,6 @@ processed: false
 status: {status_val}
 updated: {today_iso}
 tags: ["webclip", "article", "{safe_channel}"]
-extracted_to: []
 ---
 
 # {clean_title}

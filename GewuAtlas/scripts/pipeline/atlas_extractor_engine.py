@@ -34,7 +34,9 @@ from notes.atlas_yamlmini import (
     FrontmatterError,
     apply_provenance_frontmatter,
     derive_provenance_fields,
+    drop_frontmatter_field,
     extract_frontmatter,
+    extract_wikilinks,
     fm_scalar,
     is_exempt_rel_path,
     normalize_provenance_groups,
@@ -188,6 +190,7 @@ class _EvidenceResolver:
         self.rel_set = set(self.all_rels)
         self._meta_cache: Dict[str, Dict[str, Any]] = {}
         self._manifest_cache: Dict[str, Dict[str, Any]] = {}
+        self._rel_to_ref: Optional[Dict[str, str]] = None
 
         for rel in self.all_rels:
             if not (rel.startswith("20-AI-Zone/") or rel.startswith("30-Projects/")):
@@ -270,6 +273,90 @@ class _EvidenceResolver:
             return f"[[{stem}]]"
         no_ext = rel[:-3] if rel.endswith(".md") else rel
         return f"[[{no_ext}]]"
+
+    def handle_for(self, rel: str) -> str:
+        if self._rel_to_ref is None:
+            cur = self.note_reg.list_vault_handles(self.vault_ref)
+            if not set(self.all_rels).issubset(set(cur.keys())):
+                cur = self.note_reg.sync_paths(self.vault_ref, list(self.all_rels))
+            self._rel_to_ref = cur
+        return str(self._rel_to_ref.get(rel) or "")
+
+    def format_wikilink_with_handle(self, link_or_rel: str) -> Tuple[str, str]:
+        raw = str(link_or_rel or "").strip()
+        if not raw:
+            return "", ""
+        if raw in self.rel_set:
+            rel = raw
+        else:
+            inner = raw[2:-2].strip() if raw.startswith("[[") and raw.endswith("]]") else raw
+            inner = inner.split("|", 1)[0].split("#", 1)[0].strip()
+            if inner.lower().endswith(".md"):
+                inner = inner[:-3]
+            if "/" in inner:
+                cand = f"{inner}.md"
+                rel = cand if cand in self.rel_set else ""
+            else:
+                hits = self.stem_index.get(inner, [])
+                rel = hits[0] if len(hits) == 1 else ""
+        if not rel:
+            return (raw if raw.startswith("[[") else f"[[{raw}]]"), ""
+        link_raw = self.link_for(rel)
+        target_key = link_raw[2:-2]
+        meta = self.metadata(rel)
+        title = str(meta.get("title") or Path(rel).stem).strip()
+        wl = f"[[{target_key}|{title}]]" if (title and title != target_key) else f"[[{target_key}]]"
+        return wl, self.handle_for(rel)
+
+    def render_reference_index_bullets(self, groups: Sequence[Dict[str, Any]]) -> List[str]:
+        bullets: List[str] = []
+        for grp in groups:
+            src_wl, src_ref = self.format_wikilink_with_handle(str(grp.get("source") or ""))
+            details: List[str] = []
+            if src_ref:
+                details.append(f"`{src_ref}`")
+            toc_raw = str(grp.get("toc") or "").strip()
+            if toc_raw:
+                toc_wl, toc_ref = self.format_wikilink_with_handle(toc_raw)
+                details.append(f"目录：{toc_wl}" + (f" `{toc_ref}`" if toc_ref else ""))
+            slice_items: List[str] = []
+            for sl_raw in (grp.get("slices") or []):
+                sl_wl, sl_ref = self.format_wikilink_with_handle(str(sl_raw))
+                slice_items.append(f"{sl_wl}" + (f" `{sl_ref}`" if sl_ref else ""))
+            if slice_items:
+                details.append(f"关联切片：{'、'.join(slice_items)}")
+            suffix = f"（{'，'.join(details)}）" if details else ""
+            bullets.append(f"  - {src_wl}{suffix}")
+        return bullets
+
+    def extract_body_provenance_refs(self, body_or_raw: str) -> Tuple[List[str], List[str], List[str]]:
+        src_refs: List[str] = []
+        toc_refs: List[str] = []
+        slc_refs: List[str] = []
+        for raw_target in extract_wikilinks(body_or_raw or ""):
+            inner = str(raw_target or "").strip()
+            if not inner:
+                continue
+            if "/" in inner:
+                cand = f"{inner}.md"
+                hits = [cand] if cand in self.rel_set else []
+            else:
+                hits = self.stem_index.get(inner, [])
+            if len(hits) != 1:
+                continue
+            rel = hits[0]
+            try:
+                dt = str(self.metadata(rel).get("doc_type") or "").strip().lower()
+            except Exception:
+                continue
+            link_val = self.link_for(rel)
+            if dt in _SOURCE_DOC_TYPES and link_val not in src_refs:
+                src_refs.append(link_val)
+            elif dt in _TOC_DOC_TYPES and link_val not in toc_refs:
+                toc_refs.append(link_val)
+            elif dt == "slice" and link_val not in slc_refs:
+                slc_refs.append(link_val)
+        return src_refs, toc_refs, slc_refs
 
     def origin_rel(self, rel: str) -> str:
         meta = self.metadata(rel)
@@ -385,7 +472,10 @@ class _EvidenceResolver:
             for g in groups
             if g["toc"] or g["slices"] or not any(h["source"] == g["source"] and (h["toc"] or h["slices"]) for h in groups)
         ]
-        return derive_provenance_fields(filtered)["provenance"]
+        try:
+            return derive_provenance_fields(filtered)["provenance"]
+        except ValueError as exc:
+            raise VaultStoreError("E_PARAM_INVALID", f"provenance 派生校验失败: {exc}", exit_code=1) from exc
 
 
 def _append_to_extracted_to(raw_txt: str, card_link: str, *, label: str = "台账文档") -> str:
@@ -448,6 +538,62 @@ def _write_files_tx(vault_dir: Path, changes: Dict[Path, str]) -> None:
         raise VaultStoreError("E_WRITE_LOCK", f"多文件台账事务写入失败已回滚: {exc}", exit_code=1) from exc
 
 
+_REF_INDEX_HEADING_RE = re.compile(r"(?m)^##\s*(?:参考来源与知识库索引|参考来源|溯源与参考来源)\b")
+
+
+def _ensure_reference_index_section(
+    body_text: str,
+    groups: Sequence[Dict[str, Any]],
+    *,
+    resolver: Optional[_EvidenceResolver] = None,
+) -> str:
+    """Append or complete the final '## 参考来源与知识库索引' chapter in Format A (Obsidian wikilink + nte_XX handle)."""
+    if resolver is not None:
+        bullets = resolver.render_reference_index_bullets(groups)
+    else:
+        bullets = []
+        for grp in groups:
+            src_s = str(grp.get("source") or "").strip()
+            toc_s = str(grp.get("toc") or "").strip()
+            slc_s = [str(x).strip() for x in (grp.get("slices") or []) if str(x).strip()]
+            details: List[str] = []
+            if toc_s:
+                details.append(f"目录：{toc_s}")
+            if slc_s:
+                details.append(f"关联切片：{'、'.join(slc_s)}")
+            suffix = f"（{'，'.join(details)}）" if details else ""
+            bullets.append(f"  - {src_s}{suffix}")
+    base = (body_text or "").rstrip()
+    m = _REF_INDEX_HEADING_RE.search(base)
+    if not m:
+        section = "\n".join(
+            [
+                "## 参考来源与知识库索引",
+                "",
+                "- **一手文献与切片来源**：",
+                *bullets,
+            ]
+        )
+        return f"{base}\n\n{section}".strip()
+    footer = base[m.start() :]
+    existing_stems = {_link_stem(w) for w in extract_wikilinks(footer) if _link_stem(w)}
+    missing_bullets: List[str] = []
+    for grp, bullet in zip(groups, bullets):
+        needed_stems = {_link_stem(str(grp.get("source") or ""))}
+        if grp.get("toc"):
+            needed_stems.add(_link_stem(str(grp["toc"])))
+        for sl in (grp.get("slices") or []):
+            needed_stems.add(_link_stem(str(sl)))
+        needed_stems.discard("")
+        if not needed_stems.issubset(existing_stems):
+            missing_bullets.append(bullet)
+    if not missing_bullets:
+        return base
+    if "- **一手文献与切片来源**：" in footer:
+        return f"{base}\n" + "\n".join(missing_bullets)
+    return f"{base}\n- **一手文献与切片来源**：\n" + "\n".join(missing_bullets)
+
+
 def _create_single_atomic_card(
     *,
     vault_dir: Path,
@@ -463,6 +609,7 @@ def _create_single_atomic_card(
     aliases: List[str],
     by_actor: str,
     groups: List[Dict[str, Any]],
+    resolver: Optional[_EvidenceResolver] = None,
 ) -> Tuple[str, str, str]:
     clean_title = re.sub(r"[\u200b-\u200d\ufeff]+", "", title).strip() or title.strip()
     clean_summary = re.sub(r"[\u200b-\u200d\ufeff]+", "", (summary or clean_title)).strip() or clean_title
@@ -480,6 +627,8 @@ def _create_single_atomic_card(
     tags_yaml = ", ".join(f'"{fm_scalar(t)}"' for t in merged_tags)
     aliases_yaml = ", ".join(f'"{fm_scalar(a)}"' for a in aliases)
     clean_body = _strip_nested_frontmatter(_strip_leading_heading(body_text))
+    core_prose = clean_body or f"溯源自 {groups[0]['source']}。"
+    body_with_refs = _ensure_reference_index_section(core_prose, groups, resolver=resolver)
     actor = (by_actor or "").strip()
 
     lines = [
@@ -509,11 +658,23 @@ def _create_single_atomic_card(
             "",
             f"> 核心命题：{clean_summary}",
             "",
-            clean_body or f"溯源自 {groups[0]['source']}。",
+            body_with_refs,
             "",
         ]
     )
-    rendered = apply_provenance_frontmatter("\n".join(lines), groups)
+    try:
+        rendered = apply_provenance_frontmatter("\n".join(lines), groups)
+    except ValueError as exc:
+        raise VaultStoreError("E_PARAM_INVALID", f"provenance 写入校验失败: {exc}", exit_code=1) from exc
+    if "[[" in rendered and resolver is not None:
+        from notes.atlas_wikilink_tools import build_vault_link_index, normalize_inline_wikilinks
+
+        pre_map = resolver.note_reg.list_vault_handles(resolver.vault_ref)
+        if not set(resolver.all_rels).issubset(set(pre_map.keys())):
+            pre_map = resolver.note_reg.sync_paths(resolver.vault_ref, list(resolver.all_rels))
+        if pre_map:
+            idx = build_vault_link_index(vault_dir, pre_map)
+            rendered, _ = normalize_inline_wikilinks(rendered, source_rel=rel, index=idx)
     fmeta, _, _ = extract_frontmatter(rendered)
     errs = validate_note_meta(fmeta, rel_path=rel)
     if errs:
@@ -530,35 +691,103 @@ def _plan_same_domain_ledger_updates(
     card_links: Sequence[str],
     mark_toc_extracted: bool = False,
 ) -> Dict[Path, str]:
-    """Build transactional ledger updates ONLY for same-domain source/TOC targets."""
+    """Unidirectional DAG mode: never mutate library/artifact/toc `extracted_to`; only mark TOC `extracted=true` when requested."""
+    _ = card_links
+    if not mark_toc_extracted:
+        return {}
     domain_res = target_domain_root.resolve()
-    ledger_paths: List[Path] = []
-    seen_paths: set[Path] = set()
-
-    for group in groups:
-        src_rel = resolver.resolve_ref(group["source"], tuple(_SOURCE_DOC_TYPES))
-        cand_rels = [src_rel]
-        if group.get("toc"):
-            cand_rels.append(resolver.resolve_ref(group["toc"], tuple(_TOC_DOC_TYPES)))
-        for c_rel in cand_rels:
-            c_path = _safe_existing_vault_file(vault_dir, c_rel)
-            if c_path != domain_res and domain_res not in c_path.parents:
-                continue
-            if c_path not in seen_paths:
-                seen_paths.add(c_path)
-                ledger_paths.append(c_path)
-
     updates: Dict[Path, str] = {}
-    for lpath in ledger_paths:
-        txt = lpath.read_text(encoding="utf-8")
+    for group in groups:
+        if not group.get("toc"):
+            continue
+        toc_rel = resolver.resolve_ref(group["toc"], tuple(_TOC_DOC_TYPES))
+        c_path = _safe_existing_vault_file(vault_dir, toc_rel)
+        if c_path != domain_res and domain_res not in c_path.parents:
+            continue
+        if c_path in updates:
+            continue
+        txt = c_path.read_text(encoding="utf-8")
         meta, _ = _parse_frontmatter_strict(txt, label="证据台账")
-        for clink in card_links:
-            txt = _append_to_extracted_to(txt, clink, label="证据台账")
         dt = str(meta.get("doc_type") or "").strip().lower()
-        if mark_toc_extracted and dt in _TOC_DOC_TYPES:
-            txt = replace_frontmatter_field(txt, "extracted", "true")
-        updates[lpath] = txt
+        if dt in _TOC_DOC_TYPES and meta.get("extracted") is not True:
+            updates[c_path] = replace_frontmatter_field(txt, "extracted", "true")
     return updates
+
+
+def _link_stem(raw_ref: str) -> str:
+    txt = str(raw_ref or "").strip()
+    if txt.startswith("[[") and txt.endswith("]]"):
+        txt = txt[2:-2]
+    txt = txt.split("|", 1)[0].split("#", 1)[0].strip()
+    if txt.lower().endswith(".md"):
+        txt = txt[:-3]
+    return txt.rsplit("/", 1)[-1].strip()
+
+
+def _collect_atomic_backref_counts(vault_dir: Path, all_md: Sequence[str]) -> Tuple[Dict[str, set[str]], Dict[str, set[str]]]:
+    """Dynamically compute derived atomic cards per source/TOC stem without writing back `extracted_to`."""
+    by_source_stem: Dict[str, set[str]] = {}
+    by_slice_stem: Dict[str, set[str]] = {}
+    slice_to_toc_stems: Dict[str, set[str]] = {}
+
+    # First pass: collect slice -> toc map & atomic -> sources/slices/toc backrefs
+    for rel in all_md:
+        if is_exempt_rel_path(rel):
+            continue
+        txt = (vault_dir / rel).read_text(encoding="utf-8", errors="replace")
+        try:
+            meta, _, has_fm = extract_frontmatter(txt)
+        except FrontmatterError:
+            continue
+        if not has_fm:
+            continue
+        dt = str(meta.get("doc_type") or "").strip().lower()
+        stem = Path(rel).stem
+        if dt == "slice":
+            raw_maps = meta.get("map")
+            if isinstance(raw_maps, list):
+                for m in raw_maps:
+                    ts = _link_stem(str(m))
+                    if ts:
+                        slice_to_toc_stems.setdefault(stem, set()).add(ts)
+            elif isinstance(raw_maps, str) and raw_maps.strip():
+                ts = _link_stem(raw_maps)
+                if ts:
+                    slice_to_toc_stems.setdefault(stem, set()).add(ts)
+        elif dt == "atomic":
+            if str(meta.get("status") or "").strip().lower() in _FROZEN_STATUSES:
+                continue
+            src_vals: List[str] = []
+            for key in ("sources", "source"):
+                val = meta.get(key)
+                if isinstance(val, list):
+                    src_vals.extend(str(x) for x in val)
+                elif isinstance(val, str) and val.strip():
+                    src_vals.append(val)
+            for sv in src_vals:
+                ss = _link_stem(sv)
+                if ss:
+                    by_source_stem.setdefault(ss, set()).add(stem)
+            for slv in (meta.get("slices") if isinstance(meta.get("slices"), list) else []):
+                sls = _link_stem(str(slv))
+                if sls:
+                    by_slice_stem.setdefault(sls, set()).add(stem)
+            for tv in (meta.get("toc") if isinstance(meta.get("toc"), list) else []):
+                ts = _link_stem(str(tv))
+                if ts:
+                    by_source_stem.setdefault(ts, set()).add(stem)
+            for body_link in extract_wikilinks(txt):
+                bs = _link_stem(body_link)
+                if bs and bs != stem:
+                    by_source_stem.setdefault(bs, set()).add(stem)
+                    by_slice_stem.setdefault(bs, set()).add(stem)
+
+    # Propagate slice -> toc associations into by_source_stem keyed by toc stem
+    for sl_stem, atom_stems in by_slice_stem.items():
+        for toc_stem in slice_to_toc_stems.get(sl_stem, ()):
+            by_source_stem.setdefault(toc_stem, set()).update(atom_stems)
+
+    return by_source_stem, by_slice_stem
 
 
 def extract_discovery(
@@ -576,6 +805,9 @@ def extract_discovery(
     """Discover pending atomic cards (`list-pending`) or unextracted TOC/library inputs (`unextracted`)."""
     all_md = _scan_vault_markdowns(vault_dir)
     n_map = note_reg.sync_paths(vault_ref, all_md)
+    by_source_stem: Dict[str, set[str]] = {}
+    if mode == "unextracted":
+        by_source_stem, _ = _collect_atomic_backref_counts(vault_dir, all_md)
 
     pid_filter: Optional[str] = None
     if project_ref:
@@ -626,7 +858,17 @@ def extract_discovery(
                 continue
             if st in _FROZEN_STATUSES or mpid in frozen_pids:
                 continue
-            ext_list = meta.get("extracted_to") if isinstance(meta.get("extracted_to"), list) else []
+            stem = Path(rel).stem
+            derived_atoms = set(by_source_stem.get(stem, ()))
+            if dt in _TOC_DOC_TYPES and meta.get("source_doc"):
+                src_s = _link_stem(str(meta.get("source_doc")))
+                if src_s:
+                    derived_atoms.update(by_source_stem.get(src_s, ()))
+            legacy_ext = meta.get("extracted_to") if isinstance(meta.get("extracted_to"), list) else []
+            for lx in legacy_ext:
+                ls = _link_stem(str(lx))
+                if ls:
+                    derived_atoms.add(ls)
             if dt in _TOC_DOC_TYPES:
                 is_done = bool(meta.get("extracted") is True or meta.get("processed") is True)
             else:
@@ -636,7 +878,7 @@ def extract_discovery(
                 if not include_done:
                     continue
                 state = "done"
-            elif ext_list:
+            elif derived_atoms:
                 in_progress_count += 1
                 state = "in_progress"
             else:
@@ -647,10 +889,9 @@ def extract_discovery(
 
         pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=n_map[rel], rel=rel, meta=meta)
         if mode == "unextracted":
-            ext_list = meta.get("extracted_to") if isinstance(meta.get("extracted_to"), list) else []
             pub["processed"] = bool(meta.get("processed", False))
             pub["extracted"] = bool(meta.get("extracted", False))
-            pub["extracted_count"] = len(ext_list)
+            pub["extracted_count"] = len(derived_atoms)
             pub["extraction_state"] = state
             if dt in _TOC_DOC_TYPES and meta.get("total_slices") is not None:
                 pub["total_slices"] = meta.get("total_slices")
@@ -721,8 +962,6 @@ def mark_source_done(
         rendered = replace_frontmatter_field(rendered, "extracted", "true")
     else:
         rendered = replace_frontmatter_field(rendered, "processed", "true")
-    if "extracted_to" not in meta:
-        rendered = replace_frontmatter_field(rendered, "extracted_to", "[]")
     rendered = replace_frontmatter_field(rendered, "updated", _today())
     changes[fpath] = rendered
 
@@ -765,14 +1004,8 @@ def mark_source_done(
                     if s_links and s_links[0][2:-2].rsplit("/", 1)[-1] == src_stem:
                         if sm.get("extracted") is not True and sm.get("processed") is not True:
                             pending_sibling_tocs += 1
-            if pending_sibling_tocs == 0:
-                p_upd = replace_frontmatter_field(p_raw, "processed", "true")
-                if "extracted_to" not in p_meta:
-                    p_upd = replace_frontmatter_field(p_upd, "extracted_to", "[]")
-                p_upd = replace_frontmatter_field(p_upd, "updated", _today())
-                changes[parent_path] = p_upd
-                sealed.append(parent_rel)
-                parent_processed = True
+            # Parent library/artifact is marked processed=true during note-slice; never mutate parent during TOC mark-done.
+            parent_processed = bool(p_meta.get("processed") is True)
 
     _write_files_tx(vault_dir, changes)
     nmeta, _, _ = extract_frontmatter(changes[fpath])
@@ -836,10 +1069,16 @@ def backfill_provenance(
     raw_tocs = meta.get("toc")
     raw_slices = meta.get("slices")
     explicit = meta.get("provenance") if isinstance(meta.get("provenance"), list) else None
+    if explicit is None and not (raw_sources or raw_tocs or raw_slices):
+        b_sources, b_tocs, b_slices = resolver.extract_body_provenance_refs(raw)
+    else:
+        b_sources = normalize_provenance_refs(raw_sources) if explicit is None else []
+        b_tocs = normalize_provenance_refs(raw_tocs) if explicit is None else []
+        b_slices = normalize_provenance_refs(raw_slices) if explicit is None else []
     groups = resolver.build_groups(
-        source_rels=normalize_provenance_refs(raw_sources) if explicit is None else (),
-        toc_rels=normalize_provenance_refs(raw_tocs) if explicit is None else (),
-        slice_rels=normalize_provenance_refs(raw_slices) if explicit is None else (),
+        source_rels=b_sources,
+        toc_rels=b_tocs,
+        slice_rels=b_slices,
         explicit=explicit,
     )
 
@@ -847,7 +1086,13 @@ def backfill_provenance(
     if by_actor.strip():
         updated = replace_frontmatter_field(updated, "updated_by", f'"{fm_scalar(by_actor.strip())}"')
     updated = replace_frontmatter_field(updated, "updated", _today())
-    fmeta, _, _ = extract_frontmatter(updated)
+    fmeta, fbody, _ = extract_frontmatter(updated)
+    new_body = _ensure_reference_index_section(fbody, groups, resolver=resolver)
+    if new_body.strip() != fbody.strip():
+        fm_match = re.match(r"\A---[^\S\n]*\r?\n.*?\r?\n---[^\S\n]*(?:\r?\n)?", updated, re.S)
+        if fm_match:
+            updated = f"{fm_match.group(0).rstrip()}\n\n{new_body.lstrip()}\n"
+            fmeta, _, _ = extract_frontmatter(updated)
     errs = validate_note_meta(fmeta, rel_path=rel)
     if errs:
         raise VaultStoreError("E_PARAM_INVALID", "; ".join(errs), exit_code=1)
@@ -920,35 +1165,51 @@ def repair_toc_ledger(
             if str(c_meta.get("doc_type") or "").strip().lower() != "atomic":
                 continue
             c_explicit = c_meta.get("provenance") if isinstance(c_meta.get("provenance"), list) else None
+            c_sources = c_meta.get("sources") or c_meta.get("source")
+            c_tocs = c_meta.get("toc")
+            c_slices = c_meta.get("slices")
+            if c_explicit is None and not (c_sources or c_tocs or c_slices):
+                cb_sources, cb_tocs, cb_slices = resolver.extract_body_provenance_refs(c_raw)
+            else:
+                cb_sources = normalize_provenance_refs(c_sources) if c_explicit is None else []
+                cb_tocs = normalize_provenance_refs(c_tocs) if c_explicit is None else []
+                cb_slices = normalize_provenance_refs(c_slices) if c_explicit is None else []
             c_groups = resolver.build_groups(
-                source_rels=normalize_provenance_refs(c_meta.get("sources") or c_meta.get("source")) if c_explicit is None else (),
-                toc_rels=normalize_provenance_refs(c_meta.get("toc")) if c_explicit is None else (),
-                slice_rels=normalize_provenance_refs(c_meta.get("slices")) if c_explicit is None else (),
+                source_rels=cb_sources,
+                toc_rels=cb_tocs,
+                slice_rels=cb_slices,
                 explicit=c_explicit,
             )
             if any(g.get("toc") == target_link for g in c_groups):
                 repaired_links.append(f"[[{card_path.stem}]]")
 
-    arr_yaml = ", ".join(f'"{fm_scalar(x)}"' for x in repaired_links)
-    updated = replace_frontmatter_field(raw, "extracted_to", f"[{arr_yaml}]")
-    updated = replace_frontmatter_field(updated, "updated", _today())
-    _write_files_tx(vault_dir, {fpath: updated})
+    updated = drop_frontmatter_field(raw, "extracted_to")
+    if updated != raw:
+        updated = replace_frontmatter_field(updated, "updated", _today())
+        _write_files_tx(vault_dir, {fpath: updated})
 
     nmeta, _, _ = extract_frontmatter(updated)
     pub = _public_note(kek=kek, app_id=app_id, vault_ref=vault_ref, note_ref=note_ref, rel=rel, meta=nmeta)
     pub["repaired_count"] = len(repaired_links)
+    pub["derived_atomic_count"] = len(repaired_links)
     return pub, [rel]
 
 
-def _parse_provenance_arg(raw_arg: str) -> List[Any]:
-    """Parse --provenance supporting JSON array/object or pipe-formatted group strings."""
-    raw = str(raw_arg or "").strip()
-    if not raw:
-        raise VaultStoreError("E_PARAM_INVALID", "--provenance 不能为空", exit_code=1)
+def _parse_provenance_arg(raw_arg: Any) -> List[Any]:
+    """Parse --provenance supporting native JSON list/dict, JSON string, or pipe-formatted group strings."""
     fmt_hint = (
         '请传入 JSON 列表 \'[{"source_ref":"nte_XX","toc_ref":"nte_YY","slice_refs":["nte_ZZ"]}]\' '
         '或管道格式 \'"source=[[...]] | toc=[[...]] | slices=[[...]]"\''
     )
+    if isinstance(raw_arg, dict):
+        return [raw_arg]
+    if isinstance(raw_arg, list):
+        if not raw_arg:
+            raise VaultStoreError("E_PARAM_INVALID", f"--provenance 必须为非空列表；{fmt_hint}", exit_code=1)
+        return raw_arg
+    raw = str(raw_arg or "").strip()
+    if not raw:
+        raise VaultStoreError("E_PARAM_INVALID", "--provenance 不能为空", exit_code=1)
     if raw[0] in "[{":
         try:
             loaded = json.loads(raw)
@@ -1147,6 +1408,7 @@ def note_extract(
         aliases=alias_list,
         by_actor=actor,
         groups=groups,
+        resolver=resolver,
     )
     planned_cards.append((c_rel, c_stem, c_text))
     ledger_groups.extend(groups)

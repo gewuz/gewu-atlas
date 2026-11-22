@@ -270,7 +270,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [html, article, webclip]
-extracted_to: []
 ---
 
 # {doc_title}
@@ -380,7 +379,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [html, article, webclip]
-extracted_to: []
 ---
 
 # {doc_title}

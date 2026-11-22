@@ -516,7 +516,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [docx, document, office]
-extracted_to: []
 ---
 
 # {doc_title}

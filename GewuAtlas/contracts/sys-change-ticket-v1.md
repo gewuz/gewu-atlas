@@ -104,7 +104,7 @@
 
 - **双轨物理隔离与独立 Vault Git**：
   - **系统/工程轨（`SYS`）**：由工作区主 `.git` 仓管理源码、`rules/`、`contracts/`、`skills/`、`scripts/`、`tests/`、`AGENTS.md` 与根网关；主仓通过 `.gitignore` 严格隔离 `Volumes/`、`.local/` 与 `.runtime/`。
-  - **知识内容轨（`DOC`）**：每个 Vault 在 `vault-create` 时自动初始化**隔离在运行态 `state_dir/atlas-git/<vault_ref>.git`（`0700`）中的独立 DOC Git 仓**（通过 `--git-dir`/`--work-tree` 映射 Vault 工作树，不在 CLI 返回物理路径；若人类已在 Vault 内手动建有 `.git` 则自动复用）。默认通过 `info/exclude` 忽略 `00-DropZone/`、`99-Assets/98-Archives/`、`source/`（含 `30-Workbench/source/` 与各 Agent 个人空间 `ws-*/source/`）、`.trash/`、`__pycache__/` 与 `.DS_Store`。
+  - **知识内容轨（`DOC`）**：每个 Vault 在 `vault-create` 时自动初始化**隔离在运行态 `state_dir/atlas-git/<vault_ref>.git`（`0700`）中的独立 DOC Git 仓**（通过 `--git-dir`/`--work-tree` 映射 Vault 工作树，不在 CLI 返回物理路径；若人类已在 Vault 内手动建有 `.git` 则自动复用）。**统一包含 `00-DropZone/` 与 `05-Journal/`**，默认通过 `info/exclude` 忽略 `.obsidian/`、`98-Archives/`（含 `99-Assets/98-Archives/`）、`source/`（含 `30-Workbench/source/` 与各 Agent 个人空间 `ws-*/source/`）、`.trash/`、`__pycache__/`、`.DS_Store` 与 `*.tar(.gz)`。支持经 `doc-remote` 绑定 GitHub 远端（默认 `auto_push=true`，优先复用 `gh auth git-credential`，零明文凭据），并在 `doc-commit` / `doc-sync` 中统一执行防断链、禁强推、冲突 fail-closed 拦截与拉取后索引自动刷新。
   - 严禁在同一提交内混入系统轨与内容轨改动；提交前须区分轨道并仅在各自独立仓内完成提交。
 - **`DOC` 轨强制建票与超 20 文件前后双提交**：
   - Vault 内一切**删除、写入、覆盖与搬迁**动作**必须建票**（绑定调用方 `DOC`/`SLIP` 票或由运行时自动立项/复用 `DOC` 票），同时记录前置 KEK 密文快照（`chg_XX`）、`90-System/92-Logs/Changes/` 行级 Unified Diff 明细与一键后悔药（`--action undo --change_id chg_XX`）；软删除统一进入 `.trash/`（`trs_XX`）。

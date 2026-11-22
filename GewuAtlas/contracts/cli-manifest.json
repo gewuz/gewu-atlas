@@ -24,6 +24,11 @@
       "isolation": "standard",
       "script": "bootstrap.py"
     },
+    "daemon": {
+      "description": "Self-hosted Hot-Index Local Daemon control (start/status/stop/restart, zero host MCP dependency)",
+      "isolation": "standard",
+      "script": "scripts/facade/atlas_daemon.py"
+    },
     "facade": {
       "description": "Domain micro-interactions & stdin short-handle facade",
       "isolation": "vault-exec",
@@ -33,6 +38,11 @@
       "description": "Manage Domain rules/skills/scripts/contracts/AGENTS.md and batch commit",
       "isolation": "standard",
       "script": "scripts/manage/app_manage.py"
+    },
+    "mcp": {
+      "description": "Optional zero-dependency stdio MCP Server sharing AtlasHotKernel",
+      "isolation": "standard",
+      "script": "scripts/facade/atlas_mcp_server.py"
     },
     "test": {
       "description": "Domain smoke/security/domain/staging/release testing with exact selection, timing and isolated jobs",

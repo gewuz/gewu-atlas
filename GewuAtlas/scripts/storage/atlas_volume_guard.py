@@ -47,7 +47,8 @@ VOLUME_GIT_PROBE_PATTERNS = (
     re.compile(r"\bgit\b.*\b(GewuAtlas-data|Volumes)\b"),
 )
 
-_SAFE_GEWU_CMD_RE = re.compile(r"^\s*(?:python3\s+-I\s+-B\s+)?(?:\./)?gewu\s+")
+_SAFE_GEWU_CMD_RE = re.compile(r"^\s*(?:python3\s+-I\s+-B\s+)?(?:\./)?gewu(?:\.command|\.cmd)?\s+")
+_UNSAFE_SHELL_CONTROL_TOKENS = (";", "|", "&", "\n", "\r", "$(", "`", "<(", ">(")
 
 
 def _is_data_volume_path_value(val: str) -> bool:
@@ -88,7 +89,7 @@ def inspect_tool_call(tool_name: str, tool_input: Dict[str, Any]) -> Optional[st
         for pat in DANGEROUS_BASH_PATTERNS:
             if pat.search(cmd):
                 return "禁止通过原生 Shell/sqlite3 直接探查隐藏核心或 KEK 加密状态库"
-        if not _SAFE_GEWU_CMD_RE.match(cmd) or any(ch in cmd for ch in (";", "|", "&&", "$(", "`")):
+        if not _SAFE_GEWU_CMD_RE.match(cmd) or any(ch in cmd for ch in _UNSAFE_SHELL_CONTROL_TOKENS):
             for pat in DATA_VOLUME_BASH_PATTERNS:
                 if pat.search(cmd):
                     return "禁止使用原生 Shell 直接探测或操作数据卷目录，请经 ./gewu atlas --ref <vlt_01> 调用"

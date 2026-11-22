@@ -367,7 +367,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [presentation, ppt, pdf, slide]
-extracted_to: []
 ---
 
 # {first_title}
@@ -985,7 +984,6 @@ processed: false
 status: {status_val}
 updated: {today_str}
 tags: [{tags_str}]
-extracted_to: []
 ---
 
 """

@@ -186,7 +186,7 @@ def text_jaccard_similarity(a: str, b: str, n: int = 5) -> float:
     return text_overlap_metrics(a, b, n=n)[0]
 
 
-def _extract_provenance_stems(fm: Dict[str, Any]) -> List[str]:
+def _extract_provenance_stems(fm: Dict[str, Any], body: str = "") -> List[str]:
     stems: List[str] = []
     for key in ("slices", "sources", "provenance"):
         val = fm.get(key)
@@ -197,6 +197,10 @@ def _extract_provenance_stems(fm: Dict[str, Any]) -> List[str]:
             t = Path(m.group(1).strip()).stem
             if t and t not in stems:
                 stems.append(t)
+    for m in _WIKILINK_RE.finditer(body or ""):
+        t = Path(m.group(1).strip()).stem
+        if t and t not in stems:
+            stems.append(t)
     return stems
 
 
@@ -223,7 +227,7 @@ def audit_note_truth_guards(
         core_body = _strip_provenance_footer(body)
         clean_body = re.sub(r"\s+", "", core_body)
         if len(clean_body) >= 120:
-            prov_stems = _extract_provenance_stems(fm)
+            prov_stems = _extract_provenance_stems(fm, body)
             for pstem in prov_stems:
                 hit = stem_to_rel_ref.get(pstem)
                 if not hit:

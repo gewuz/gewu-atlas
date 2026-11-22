@@ -11,9 +11,18 @@ import re
 import secrets
 import sqlite3
 import struct
+import sys
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
+
+if sys.platform != "win32":
+    import fcntl
+else:  # pragma: no cover
+    import msvcrt
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 CONTAINER_MAGIC = b"GWVA1"
@@ -213,8 +222,70 @@ def _atomic_write_0600(path: Path, data: bytes) -> None:
         raise
 
 
+@contextmanager
+def registry_file_lock(
+    target_path: Path,
+    *,
+    shared: bool = False,
+    thread_lock: Optional[threading.Lock] = None,
+):
+    """Cross-platform advisory file lock for KEK registries (POSIX flock / Windows msvcrt.locking)."""
+    _check_no_symlink(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(target_path.parent, 0o700)
+    except OSError:
+        pass
+    lock_path = target_path.with_suffix(target_path.suffix + ".lock")
+    _check_no_symlink(lock_path)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | _O_NOFOLLOW, 0o600)
+    if thread_lock is not None:
+        thread_lock.acquire()
+    locked = False
+    try:
+        if sys.platform != "win32":
+            fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+            locked = True
+        else:  # pragma: no cover
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            locked = True
+        yield
+    finally:
+        try:
+            if locked:
+                if sys.platform != "win32":
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                else:  # pragma: no cover
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+            if thread_lock is not None:
+                thread_lock.release()
+
+
+def _read_existing_kek(key_path: Path) -> bytes:
+    _check_no_symlink(key_path)
+    for attempt in range(20):
+        fd = os.open(key_path, os.O_RDONLY | _O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            raw = fh.read().strip()
+        if len(raw) == 64 and re.fullmatch(rb"[0-9a-fA-F]{64}", raw):
+            return bytes.fromhex(raw.decode("ascii"))
+        if len(raw) == 32:
+            return raw
+        if not raw and attempt < 19:
+            time.sleep(0.005)
+            continue
+        break
+    raise VaultStoreError("E_HALT_SECURITY", "KEK 密钥槽格式损坏", exit_code=2)
+
+
 def load_or_init_kek(key_path: Path) -> bytes:
-    """Load 32-byte KEK from GEWU_APP_KEK or protected 0600 key slot."""
+    """Load 32-byte KEK from GEWU_APP_KEK or protected 0600 key slot (race-free O_EXCL cold start)."""
     env_kek = os.environ.get("GEWU_APP_KEK", "").strip()
     if env_kek:
         if re.fullmatch(r"[0-9a-fA-F]{64}", env_kek):
@@ -223,17 +294,32 @@ def load_or_init_kek(key_path: Path) -> bytes:
 
     _check_no_symlink(key_path)
     if key_path.exists():
-        fd = os.open(key_path, os.O_RDONLY | _O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as fh:
-            raw = fh.read().strip()
-        if len(raw) == 64 and re.fullmatch(rb"[0-9a-fA-F]{64}", raw):
-            return bytes.fromhex(raw.decode("ascii"))
-        if len(raw) == 32:
-            return raw
-        raise VaultStoreError("E_HALT_SECURITY", "KEK 密钥槽格式损坏", exit_code=2)
+        return _read_existing_kek(key_path)
 
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(key_path.parent, 0o700)
+    except OSError:
+        pass
     kek = secrets.token_bytes(32)
-    _atomic_write_0600(key_path, kek.hex().encode("ascii") + b"\n")
+    payload = kek.hex().encode("ascii") + b"\n"
+    try:
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return _read_existing_kek(key_path)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(key_path, 0o600)
+    except Exception:
+        if key_path.exists():
+            try:
+                key_path.unlink()
+            except OSError:
+                pass
+        raise
     return kek
 
 
@@ -244,8 +330,14 @@ class KekVaultRegistry:
         self.app_id = app_id
         self.enc_path = enc_path
         self.kek = kek
+        self._thread_lock = threading.Lock()
         if len(kek) != 32:
             raise VaultStoreError("E_HALT_SECURITY", "KEK 长度必须为 32 字节", exit_code=2)
+
+    @contextmanager
+    def _container_lock(self, *, shared: bool = False):
+        with registry_file_lock(self.enc_path, shared=shared, thread_lock=self._thread_lock):
+            yield
 
     def _derive_keys(self, salt: bytes) -> Tuple[bytes, bytes]:
         db_key = hkdf_sha256(self.kek, salt, f"{self.app_id}|container-db|v1".encode("utf-8"), 32)
@@ -394,75 +486,78 @@ class KekVaultRegistry:
         summary: str = "",
     ) -> Dict[str, Any]:
         validate_rel_vault_path(rel_path)
-        conn, salt = self._open_memory_db()
-        try:
-            if self._find_row(conn, vault_id=vault_id) is not None:
-                raise VaultStoreError("E_PARAM_CONFLICT", f"Vault '{vault_id}' 已存在或处于软删除占用中", exit_code=1)
-            _, field_dek = self._derive_keys(salt)
-            cur = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM vault_rows")
-            next_seq = int(cur.fetchone()[0]) + 1
-            handle = f"vlt_{next_seq:02d}"
-            now = _now_iso()
-            payload = {
-                "vault_id": vault_id,
-                "rel_path": rel_path,
-                "title": title,
-                "summary": summary,
-                "obsidian_base": bool(obsidian_base),
-                "default_mode": default_mode,
-                "status": "active",
-                "created_at": now,
-                "updated_at": now,
-                "deleted_at": None,
-                "trash_rel_path": None,
-            }
-            n_hex, ct_b64, t_hex = self._encrypt_payload(vault_id, 1, payload, field_dek)
-            conn.execute(
-                "INSERT INTO vault_rows(seq, handle, vault_id, key_version, nonce_hex, ciphertext_b64, tag_hex, deleted) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                (next_seq, handle, vault_id, 1, n_hex, ct_b64, t_hex),
-            )
-            self._save_memory_db(conn, salt)
-            return {
-                "ref": handle,
-                "vault_id": vault_id,
-                "rel_path": rel_path,
-                "title": title,
-                "summary": summary,
-                "obsidian_base": bool(obsidian_base),
-                "default_mode": default_mode,
-                "status": "active",
-                "created_at": now,
-                "updated_at": now,
-            }
-        finally:
-            conn.close()
+        with self._container_lock():
+            conn, salt = self._open_memory_db()
+            try:
+                if self._find_row(conn, vault_id=vault_id) is not None:
+                    raise VaultStoreError("E_PARAM_CONFLICT", f"Vault '{vault_id}' 已存在或处于软删除占用中", exit_code=1)
+                _, field_dek = self._derive_keys(salt)
+                cur = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM vault_rows")
+                next_seq = int(cur.fetchone()[0]) + 1
+                handle = f"vlt_{next_seq:02d}"
+                now = _now_iso()
+                payload = {
+                    "vault_id": vault_id,
+                    "rel_path": rel_path,
+                    "title": title,
+                    "summary": summary,
+                    "obsidian_base": bool(obsidian_base),
+                    "default_mode": default_mode,
+                    "status": "active",
+                    "created_at": now,
+                    "updated_at": now,
+                    "deleted_at": None,
+                    "trash_rel_path": None,
+                }
+                n_hex, ct_b64, t_hex = self._encrypt_payload(vault_id, 1, payload, field_dek)
+                conn.execute(
+                    "INSERT INTO vault_rows(seq, handle, vault_id, key_version, nonce_hex, ciphertext_b64, tag_hex, deleted) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                    (next_seq, handle, vault_id, 1, n_hex, ct_b64, t_hex),
+                )
+                self._save_memory_db(conn, salt)
+                return {
+                    "ref": handle,
+                    "vault_id": vault_id,
+                    "rel_path": rel_path,
+                    "title": title,
+                    "summary": summary,
+                    "obsidian_base": bool(obsidian_base),
+                    "default_mode": default_mode,
+                    "status": "active",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            finally:
+                conn.close()
 
     def list_vaults(self, *, include_deleted: bool = False) -> List[Dict[str, Any]]:
-        conn, salt = self._open_memory_db()
-        try:
-            _, field_dek = self._derive_keys(salt)
-            sql = "SELECT seq, handle, vault_id, key_version, nonce_hex, ciphertext_b64, tag_hex, deleted FROM vault_rows"
-            if not include_deleted:
-                sql += " WHERE deleted = 0"
-            sql += " ORDER BY seq ASC"
-            out = []
-            for row in conn.execute(sql).fetchall():
-                out.append(self._decrypt_row(row, field_dek))
-            return out
-        finally:
-            conn.close()
+        with self._container_lock(shared=True):
+            conn, salt = self._open_memory_db()
+            try:
+                _, field_dek = self._derive_keys(salt)
+                sql = "SELECT seq, handle, vault_id, key_version, nonce_hex, ciphertext_b64, tag_hex, deleted FROM vault_rows"
+                if not include_deleted:
+                    sql += " WHERE deleted = 0"
+                sql += " ORDER BY seq ASC"
+                out = []
+                for row in conn.execute(sql).fetchall():
+                    out.append(self._decrypt_row(row, field_dek))
+                return out
+            finally:
+                conn.close()
 
     def get_vault(self, *, vault_id: Optional[str] = None, ref: Optional[str] = None) -> Dict[str, Any]:
-        conn, salt = self._open_memory_db()
-        try:
-            row = self._find_row(conn, vault_id=vault_id, ref=ref)
-            if row is None:
-                raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
-            _, field_dek = self._derive_keys(salt)
-            return self._decrypt_row(row, field_dek)
-        finally:
-            conn.close()
+        with self._container_lock(shared=True):
+            conn, salt = self._open_memory_db()
+            try:
+                row = self._find_row(conn, vault_id=vault_id, ref=ref)
+                if row is None:
+                    raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
+                _, field_dek = self._derive_keys(salt)
+                return self._decrypt_row(row, field_dek)
+            finally:
+                conn.close()
 
     def update_vault(
         self,
@@ -476,57 +571,58 @@ class KekVaultRegistry:
         obsidian_base: Optional[bool] = None,
         default_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        conn, salt = self._open_memory_db()
-        try:
-            row = self._find_row(conn, vault_id=vault_id, ref=ref)
-            if row is None:
-                raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
-            _, field_dek = self._derive_keys(salt)
-            cur_data = self._decrypt_row(row, field_dek)
-            if cur_data.get("deleted"):
-                raise VaultStoreError("E_PARAM_INVALID", "已软删除 Vault 不可直接修改", exit_code=1)
+        with self._container_lock():
+            conn, salt = self._open_memory_db()
+            try:
+                row = self._find_row(conn, vault_id=vault_id, ref=ref)
+                if row is None:
+                    raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
+                _, field_dek = self._derive_keys(salt)
+                cur_data = self._decrypt_row(row, field_dek)
+                if cur_data.get("deleted"):
+                    raise VaultStoreError("E_PARAM_INVALID", "已软删除 Vault 不可直接修改", exit_code=1)
 
-            target_vid = new_vault_id or cur_data["vault_id"]
-            target_rel = new_rel_path or cur_data["rel_path"]
-            validate_rel_vault_path(target_rel)
-            if target_vid != cur_data["vault_id"] and self._find_row(conn, vault_id=target_vid) is not None:
-                raise VaultStoreError("E_PARAM_CONFLICT", f"目标 Vault '{target_vid}' 已存在", exit_code=1)
+                target_vid = new_vault_id or cur_data["vault_id"]
+                target_rel = new_rel_path or cur_data["rel_path"]
+                validate_rel_vault_path(target_rel)
+                if target_vid != cur_data["vault_id"] and self._find_row(conn, vault_id=target_vid) is not None:
+                    raise VaultStoreError("E_PARAM_CONFLICT", f"目标 Vault '{target_vid}' 已存在", exit_code=1)
 
-            next_kv = int(cur_data["key_version"]) + 1
-            now = _now_iso()
-            payload = {
-                "vault_id": target_vid,
-                "rel_path": target_rel,
-                "title": title if title is not None else cur_data["title"],
-                "summary": summary if summary is not None else cur_data.get("summary", ""),
-                "obsidian_base": bool(obsidian_base) if obsidian_base is not None else bool(cur_data["obsidian_base"]),
-                "default_mode": default_mode if default_mode is not None else cur_data["default_mode"],
-                "status": cur_data["status"],
-                "created_at": cur_data["created_at"],
-                "updated_at": now,
-                "deleted_at": cur_data.get("deleted_at"),
-                "trash_rel_path": cur_data.get("trash_rel_path"),
-            }
-            n_hex, ct_b64, t_hex = self._encrypt_payload(target_vid, next_kv, payload, field_dek)
-            conn.execute(
-                "UPDATE vault_rows SET vault_id = ?, key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ? WHERE seq = ?",
-                (target_vid, next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
-            )
-            self._save_memory_db(conn, salt)
-            return {
-                "ref": cur_data["ref"],
-                "vault_id": target_vid,
-                "rel_path": target_rel,
-                "title": payload["title"],
-                "summary": payload.get("summary", ""),
-                "obsidian_base": payload["obsidian_base"],
-                "default_mode": payload["default_mode"],
-                "status": payload["status"],
-                "key_version": next_kv,
-                "updated_at": now,
-            }
-        finally:
-            conn.close()
+                next_kv = int(cur_data["key_version"]) + 1
+                now = _now_iso()
+                payload = {
+                    "vault_id": target_vid,
+                    "rel_path": target_rel,
+                    "title": title if title is not None else cur_data["title"],
+                    "summary": summary if summary is not None else cur_data.get("summary", ""),
+                    "obsidian_base": bool(obsidian_base) if obsidian_base is not None else bool(cur_data["obsidian_base"]),
+                    "default_mode": default_mode if default_mode is not None else cur_data["default_mode"],
+                    "status": cur_data["status"],
+                    "created_at": cur_data["created_at"],
+                    "updated_at": now,
+                    "deleted_at": cur_data.get("deleted_at"),
+                    "trash_rel_path": cur_data.get("trash_rel_path"),
+                }
+                n_hex, ct_b64, t_hex = self._encrypt_payload(target_vid, next_kv, payload, field_dek)
+                conn.execute(
+                    "UPDATE vault_rows SET vault_id = ?, key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ? WHERE seq = ?",
+                    (target_vid, next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
+                )
+                self._save_memory_db(conn, salt)
+                return {
+                    "ref": cur_data["ref"],
+                    "vault_id": target_vid,
+                    "rel_path": target_rel,
+                    "title": payload["title"],
+                    "summary": payload.get("summary", ""),
+                    "obsidian_base": payload["obsidian_base"],
+                    "default_mode": payload["default_mode"],
+                    "status": payload["status"],
+                    "key_version": next_kv,
+                    "updated_at": now,
+                }
+            finally:
+                conn.close()
 
     def delete_vault(
         self,
@@ -536,56 +632,57 @@ class KekVaultRegistry:
         purge: bool = False,
         trash_rel_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        conn, salt = self._open_memory_db()
-        try:
-            row = self._find_row(conn, vault_id=vault_id, ref=ref)
-            if row is None:
-                raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
-            _, field_dek = self._derive_keys(salt)
-            cur_data = self._decrypt_row(row, field_dek)
-            if purge:
-                conn.execute("DELETE FROM vault_rows WHERE seq = ?", (int(cur_data["seq"]),))
+        with self._container_lock():
+            conn, salt = self._open_memory_db()
+            try:
+                row = self._find_row(conn, vault_id=vault_id, ref=ref)
+                if row is None:
+                    raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
+                _, field_dek = self._derive_keys(salt)
+                cur_data = self._decrypt_row(row, field_dek)
+                if purge:
+                    conn.execute("DELETE FROM vault_rows WHERE seq = ?", (int(cur_data["seq"]),))
+                    self._save_memory_db(conn, salt)
+                    return {
+                        "ref": cur_data["ref"],
+                        "vault_id": cur_data["vault_id"],
+                        "rel_path": cur_data["rel_path"],
+                        "status": "purged",
+                    }
+
+                if cur_data.get("deleted"):
+                    raise VaultStoreError("E_PARAM_INVALID", "Vault 已处于软删除状态；如需彻底清除请传入 --purge true", exit_code=1)
+                now = _now_iso()
+                next_kv = int(cur_data["key_version"]) + 1
+                payload = {
+                    "vault_id": cur_data["vault_id"],
+                    "rel_path": cur_data["rel_path"],
+                    "title": cur_data["title"],
+                    "summary": cur_data.get("summary", ""),
+                    "obsidian_base": cur_data["obsidian_base"],
+                    "default_mode": cur_data["default_mode"],
+                    "status": "deleted",
+                    "created_at": cur_data["created_at"],
+                    "updated_at": now,
+                    "deleted_at": now,
+                    "trash_rel_path": trash_rel_path,
+                }
+                n_hex, ct_b64, t_hex = self._encrypt_payload(cur_data["vault_id"], next_kv, payload, field_dek)
+                conn.execute(
+                    "UPDATE vault_rows SET key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ?, deleted = 1 WHERE seq = ?",
+                    (next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
+                )
                 self._save_memory_db(conn, salt)
                 return {
                     "ref": cur_data["ref"],
                     "vault_id": cur_data["vault_id"],
                     "rel_path": cur_data["rel_path"],
-                    "status": "purged",
+                    "trash_rel_path": trash_rel_path,
+                    "status": "deleted",
+                    "deleted_at": now,
                 }
-
-            if cur_data.get("deleted"):
-                raise VaultStoreError("E_PARAM_INVALID", "Vault 已处于软删除状态；如需彻底清除请传入 --purge true", exit_code=1)
-            now = _now_iso()
-            next_kv = int(cur_data["key_version"]) + 1
-            payload = {
-                "vault_id": cur_data["vault_id"],
-                "rel_path": cur_data["rel_path"],
-                "title": cur_data["title"],
-                "summary": cur_data.get("summary", ""),
-                "obsidian_base": cur_data["obsidian_base"],
-                "default_mode": cur_data["default_mode"],
-                "status": "deleted",
-                "created_at": cur_data["created_at"],
-                "updated_at": now,
-                "deleted_at": now,
-                "trash_rel_path": trash_rel_path,
-            }
-            n_hex, ct_b64, t_hex = self._encrypt_payload(cur_data["vault_id"], next_kv, payload, field_dek)
-            conn.execute(
-                "UPDATE vault_rows SET key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ?, deleted = 1 WHERE seq = ?",
-                (next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
-            )
-            self._save_memory_db(conn, salt)
-            return {
-                "ref": cur_data["ref"],
-                "vault_id": cur_data["vault_id"],
-                "rel_path": cur_data["rel_path"],
-                "trash_rel_path": trash_rel_path,
-                "status": "deleted",
-                "deleted_at": now,
-            }
-        finally:
-            conn.close()
+            finally:
+                conn.close()
 
     def restore_vault(
         self,
@@ -593,49 +690,50 @@ class KekVaultRegistry:
         vault_id: Optional[str] = None,
         ref: Optional[str] = None,
     ) -> Dict[str, Any]:
-        conn, salt = self._open_memory_db()
-        try:
-            row = self._find_row(conn, vault_id=vault_id, ref=ref)
-            if row is None:
-                raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
-            _, field_dek = self._derive_keys(salt)
-            cur_data = self._decrypt_row(row, field_dek)
-            if not cur_data.get("deleted"):
-                raise VaultStoreError("E_PARAM_CONFLICT", "Vault 当前处于活跃状态，无需恢复", exit_code=1)
-            now = _now_iso()
-            next_kv = int(cur_data["key_version"]) + 1
-            payload = {
-                "vault_id": cur_data["vault_id"],
-                "rel_path": cur_data["rel_path"],
-                "title": cur_data["title"],
-                "summary": cur_data.get("summary", ""),
-                "obsidian_base": cur_data["obsidian_base"],
-                "default_mode": cur_data["default_mode"],
-                "status": "active",
-                "created_at": cur_data["created_at"],
-                "updated_at": now,
-                "deleted_at": None,
-                "trash_rel_path": None,
-            }
-            n_hex, ct_b64, t_hex = self._encrypt_payload(cur_data["vault_id"], next_kv, payload, field_dek)
-            conn.execute(
-                "UPDATE vault_rows SET key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ?, deleted = 0 WHERE seq = ?",
-                (next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
-            )
-            self._save_memory_db(conn, salt)
-            return {
-                "ref": cur_data["ref"],
-                "vault_id": cur_data["vault_id"],
-                "rel_path": cur_data["rel_path"],
-                "title": cur_data["title"],
-                "summary": cur_data.get("summary", ""),
-                "obsidian_base": cur_data["obsidian_base"],
-                "default_mode": cur_data["default_mode"],
-                "key_version": next_kv,
-                "status": "active",
-                "created_at": cur_data["created_at"],
-                "updated_at": now,
-                "restored_from_trash_rel": cur_data.get("trash_rel_path"),
-            }
-        finally:
-            conn.close()
+        with self._container_lock():
+            conn, salt = self._open_memory_db()
+            try:
+                row = self._find_row(conn, vault_id=vault_id, ref=ref)
+                if row is None:
+                    raise VaultStoreError("E_NOT_FOUND", "目标 Vault 不存在", exit_code=1)
+                _, field_dek = self._derive_keys(salt)
+                cur_data = self._decrypt_row(row, field_dek)
+                if not cur_data.get("deleted"):
+                    raise VaultStoreError("E_PARAM_CONFLICT", "Vault 当前处于活跃状态，无需恢复", exit_code=1)
+                now = _now_iso()
+                next_kv = int(cur_data["key_version"]) + 1
+                payload = {
+                    "vault_id": cur_data["vault_id"],
+                    "rel_path": cur_data["rel_path"],
+                    "title": cur_data["title"],
+                    "summary": cur_data.get("summary", ""),
+                    "obsidian_base": cur_data["obsidian_base"],
+                    "default_mode": cur_data["default_mode"],
+                    "status": "active",
+                    "created_at": cur_data["created_at"],
+                    "updated_at": now,
+                    "deleted_at": None,
+                    "trash_rel_path": None,
+                }
+                n_hex, ct_b64, t_hex = self._encrypt_payload(cur_data["vault_id"], next_kv, payload, field_dek)
+                conn.execute(
+                    "UPDATE vault_rows SET key_version = ?, nonce_hex = ?, ciphertext_b64 = ?, tag_hex = ?, deleted = 0 WHERE seq = ?",
+                    (next_kv, n_hex, ct_b64, t_hex, int(cur_data["seq"])),
+                )
+                self._save_memory_db(conn, salt)
+                return {
+                    "ref": cur_data["ref"],
+                    "vault_id": cur_data["vault_id"],
+                    "rel_path": cur_data["rel_path"],
+                    "title": cur_data["title"],
+                    "summary": cur_data.get("summary", ""),
+                    "obsidian_base": cur_data["obsidian_base"],
+                    "default_mode": cur_data["default_mode"],
+                    "key_version": next_kv,
+                    "status": "active",
+                    "created_at": cur_data["created_at"],
+                    "updated_at": now,
+                    "restored_from_trash_rel": cur_data.get("trash_rel_path"),
+                }
+            finally:
+                conn.close()

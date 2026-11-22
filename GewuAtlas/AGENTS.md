@@ -19,6 +19,9 @@
      - 每次写算子出口自动顺风车返回 `delivery_gate` 状态；收尾可显式调用 `./gewu atlas --action guard --ref <vlt_XX> --mode delivery [--project_ref <prj_XX>] [--note_refs ...]` 完成 **60 分算子硬评估**（空间净空 15 + Schema 15 + 双链与引用真值 15 + 审批边界 15）；
      - 随后执行 **40 分语义评估**：**若当前 Agent 具备 Subagent 调用能力，优先唤起独立只读 Subagent 按三维量表盲审打分；若无 Subagent 能力，则由主 Agent 显式自我评估**，总分 ≥ 60 且无硬伤方可交付。
 3. **统一门面与零路径盲化**：工作区根执行 `./gewu atlas <cmd>`（或 `./gewu.command atlas <cmd>`）；严禁原生探测 `Volumes/GewuAtlas-data/`、`scripts/app_core/`、`.local/`、`.runtime/`；对外只传短句柄（`vlt_XX`/`prj_XX`/`nte_XX`/`slp_XX`/`trs_XX`）；遇 `GUARD: INPUT_REQUIRED` 或 `GUARD: HALTED` 立即停手汇报。
+4. **高效执行约定（自托管热内核 + 局部/批处理原语，免宿主 MCP 依赖）**：
+   - **热内核启停**：L2/L3 多步任务建议开工 `./gewu atlas daemon start [--preload-vault <vlt_XX>]`、收工 `./gewu atlas daemon stop`（空闲默认 600s 自动自毁清空内存）；运行期间所有常规 `--action` 自动复用内存热索引与热 KEK，未启动或沙箱受限自动无感降级（支持 MCP 的宿主亦可选 `./gewu atlas mcp`）。
+   - **少回合高密度原语**：局部改长文/MOC 优先用 `note-patch`（自动保护受控块、原文只读与日记人类区）；多步连续写入优先用 `batch`（单锁、合并 `DOC` 票与 `chg_XX` 后悔药、支持 `$step_id.field` 串联）；全局摸底优先用 `project-brief`、`note-grep` 与 `note-get --outline true`。草稿区（`zone=workbench`）写入自动走 $O(1)$ 脏卡顺风车，跨入正式区才跑全库 60/60 验货。
 
 ## 2. 行为规范（Rules）与配置字典（Dicts）唯一来源
 
@@ -38,8 +41,8 @@
 
 | 分类 | 业务场景与触发意图 | 推荐技能与核心算子入口 |
 | :--- | :--- | :--- |
-| **找与读** | 查库定位、跨库/单库检索、批量读卡（`--note_refs`）、带 YAML 原文读取（`--raw`）、工作台源码直读（`file-read`）与循证问答 | [atlas-qa](skills/atlas-qa/SKILL.md) / `./gewu atlas --action vault\|note-search\|note-list\|note-get\|file-read\|graph-report\|vfs-links` |
-| **写与整理** | 笔记创建改写、目录搬迁复制、统一软删与恢复（`trash`）、工作台成果采收定稿（`artifact-adopt`/`finalize`）、日记（`journal`）与书签（`slip`） | [atlas-note](skills/atlas-note/SKILL.md) / `./gewu atlas --action note-create\|note-update\|note-promote\|note-deprecate\|vfs-move\|vfs-copy\|trash\|artifact-adopt\|artifact-finalize\|journal\|slip\|ticket-*` |
+| **找与读** | 查库定位、跨库/单库检索、批量读卡（`--note_refs`/`--outline`）、跨卡精查（`note-grep`）、一屏全景（`project-brief`）、源码直读（`file-read`）与循证问答 | [atlas-qa](skills/atlas-qa/SKILL.md) / `./gewu atlas --action vault\|note-search\|note-grep\|project-brief\|note-list\|note-get\|file-read\|graph-report\|vfs-links` |
+| **写与整理** | 笔记创建、局部补丁（`note-patch`）、事务批处理（`batch`）、目录搬迁、软删恢复（`trash`）、采收定稿、日记与书签 | [atlas-note](skills/atlas-note/SKILL.md) / `./gewu atlas --action note-create\|note-patch\|note-update\|batch\|note-promote\|note-deprecate\|vfs-move\|vfs-copy\|trash\|artifact-adopt\|artifact-finalize\|journal\|slip\|ticket-*` |
 | **入库加工** | 新文档/URL/DropZone 入库（`ingest --auto_slice` 一步转译切片）、`deep` 精修、原子萃取、审批转正与 `moc-sync` 织网 | [atlas-ingest-flow](skills/atlas-ingest-flow/SKILL.md) / `./gewu atlas --action ingest\|fmt-window\|fmt-apply-window\|fmt-assets\|note-slice\|atomic-extract\|atomic-approve\|moc-sync\|note-link` |
 | **库与课题** | 库切换与创建/接管（`vault`/`vault-create`/`vault-import`）、课题域 CRUD/合并拆分撤回/公开退网冻结与工作台空间 | [atlas-project](skills/atlas-project/SKILL.md) / `./gewu atlas --action vault\|vault-create\|vault-import\|vault-update\|index-sync\|project-*\|workbench-*` |
 | **验货与运维** | 交付闸门 60 分算子硬评估（`guard --mode delivery`）、字典体检、断链校验、DOC Git 同步与 `chg_XX` 后悔药 | [atlas-ops](skills/atlas-ops/SKILL.md) / `./gewu atlas --action guard --mode delivery\|health\|schema\|validate\|links\|doc-status\|doc-commit\|clean-attachments\|archive-*\|undo\|retention-sweep` |
@@ -58,4 +61,4 @@
 | :--- | :--- |
 | 能力自省与最小填空模板 | `./gewu atlas capabilities` / `./gewu atlas --template` / [commands.yaml](dicts/commands.yaml) / [cli-manifest.json](contracts/cli-manifest.json) |
 | 平台防越轨、测试与提交基线 | [rule-app-contract-rail.md](rules/rule-app-contract-rail.md) / [rule-testing-strategy.md](rules/rule-testing-strategy.md) / [execution-routing-v1.md](contracts/execution-routing-v1.md) / [commit-message-v1.md](contracts/commit-message-v1.md) |
-| 域自测、台账管理与备份 | `./gewu atlas test --scenario smoke\|security\|domain\|staging\|release` / `./gewu atlas manage ...` / `./gewu atlas backup\|boot ...` |
+| 域自测、台账管理、热内核与备份 | `./gewu atlas daemon start\|status\|stop`（多步任务热内核加速，零宿主 MCP 依赖，可选 `./gewu atlas mcp`） / `./gewu atlas test --scenario smoke\|security\|domain\|staging\|release` / `./gewu atlas manage ...` / `./gewu atlas backup\|boot ...` |

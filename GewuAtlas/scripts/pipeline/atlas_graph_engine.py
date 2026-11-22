@@ -939,9 +939,10 @@ def moc_sync(
     obj_c = len(layer_buckets[0])
     sub_syn_c = len(layer_buckets[1])
     hyp_c = len(layer_buckets[2])
+    moc_linked_stems = _collect_moc_linked_stems(vault_dir, rels, proj_prefix or "20-AI-Zone/", exclude_rel=existing_moc_rel)
     unmapped_c = sum(
-        1 for a_rel, a_meta in all_atomic_rels
-        if Path(a_rel).stem not in included_stems and not a_meta.get("map")
+        1 for a_rel, _a_meta in all_atomic_rels
+        if Path(a_rel).stem not in included_stems and Path(a_rel).stem not in moc_linked_stems
     )
     gaps_hint: List[str] = []
     if obj_c == 0:
@@ -1036,32 +1037,10 @@ def moc_sync(
     if meta_errs:
         raise VaultStoreError("E_PARAM_INVALID", f"MOC 元数据校验失败: {'; '.join(meta_errs)}", exit_code=1)
 
+    # Unidirectional DAG mode: MOC body links downward to atomics; never write back `map` into atomic frontmatter.
     tx_changes: Dict[Path, str] = {target_path: rendered}
-    own_moc_link = f"[[{Path(target_rel).stem}]]"
     map_added_count = 0
     map_removed_count = 0
-
-    for a_rel, a_meta in all_atomic_rels:
-        a_path = _safe_existing_note(vault_dir, a_rel)
-        a_stem = Path(a_rel).stem
-        raw_maps = a_meta.get("map")
-        cur_maps = (
-            [str(m).strip() for m in raw_maps if str(m).strip()]
-            if isinstance(raw_maps, list)
-            else ([str(raw_maps).strip()] if isinstance(raw_maps, str) and str(raw_maps).strip() else [])
-        )
-        if a_stem in included_stems:
-            next_maps = cur_maps if own_moc_link in cur_maps else [*cur_maps, own_moc_link]
-        else:
-            next_maps = [m for m in cur_maps if m != own_moc_link]
-        if next_maps != cur_maps:
-            if len(next_maps) > len(cur_maps):
-                map_added_count += 1
-            else:
-                map_removed_count += 1
-            a_txt = a_path.read_text(encoding="utf-8")
-            a_updated = replace_frontmatter_field(a_txt, "map", json.dumps(next_maps, ensure_ascii=False))
-            tx_changes[a_path] = a_updated
 
     effective_private = bool(fmeta.get("private") is True)
     effective_read_status = str(fmeta.get("read_status") or existing_read_status)
@@ -1129,6 +1108,39 @@ def moc_sync(
 _GENERIC_ROAM_TAGS = {"atomic", "project", "note", "moc", "obj", "sub", "syn", "hyp", "workbench", "library"}
 
 
+def _collect_moc_linked_stems(
+    vault_dir: Path,
+    rels: Sequence[str],
+    dom_prefix: str,
+    *,
+    exclude_rel: Optional[str] = None,
+) -> set[str]:
+    """Return stems of cards linked downward from any active MOC body in the domain (unidirectional DAG)."""
+    linked: set[str] = set()
+    for rel in rels:
+        if exclude_rel and rel == exclude_rel:
+            continue
+        if dom_prefix and not rel.startswith(dom_prefix):
+            continue
+        if _zone_for_rel(rel) != "moc":
+            continue
+        fp = _safe_existing_note(vault_dir, rel)
+        try:
+            raw = fp.read_text(encoding="utf-8")
+            meta, body, has_fm = extract_frontmatter(raw)
+        except Exception:
+            continue
+        if not has_fm or str(meta.get("doc_type") or "").strip().lower() != "moc":
+            continue
+        if str(meta.get("status") or "").strip().lower() in ("deprecated", "archived"):
+            continue
+        for lk in extract_wikilinks(body):
+            st = Path(lk).stem.strip()
+            if st:
+                linked.add(st)
+    return linked
+
+
 def moc_roam_discover(
     *,
     vault_dir: Path,
@@ -1151,6 +1163,7 @@ def moc_roam_discover(
     )
     dom_prefix = Path(dom["domain_root"]).relative_to(vault_dir).as_posix().rstrip("/") + "/"
     dom_pid = str(dom["project_id"])
+    moc_linked_stems = _collect_moc_linked_stems(vault_dir, rels, dom_prefix)
 
     unmapped: Dict[str, Dict[str, Any]] = {}
     stem_to_rel: Dict[str, str] = {}
@@ -1165,9 +1178,7 @@ def moc_roam_discover(
             continue
         if not has_fm or str(meta.get("status") or "").strip().lower() != "active":
             continue
-        raw_map = meta.get("map")
-        has_map = bool(raw_map and ((isinstance(raw_map, list) and any(str(x).strip() for x in raw_map)) or (isinstance(raw_map, str) and raw_map.strip())))
-        if has_map:
+        if Path(rel).stem in moc_linked_stems:
             continue
         tags = [str(t).strip() for t in (meta.get("tags") or []) if str(t).strip() and str(t).strip().lower() not in _GENERIC_ROAM_TAGS]
         unmapped[rel] = {
