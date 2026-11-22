@@ -16,7 +16,7 @@ description: Atlas 交付验货闸门、运维体检、自托管热内核守护�
 | **交付验货闸门（60分硬底线）** | `delivery`（或 `verify`） | **一键检验四维硬指标**：① 工作区根目录净空、VFS 拓扑与课题 `Manifest` 台账完整性（15分，自动将本次检查记录与三舱位计数同步写入课题 `Manifest-*.md`）；② YAML Schema 与字典合规（15分）；③ 引用句柄（`--note_refs`）真实性、Mermaid 闭合与零断链（15分）；④ 审批边界（15分），并输出 40 分 Subagent/自评量表协议 |
 | 综合体检与 Schema 字典 | `health` / `schema` / `schema-list` | `[--note_ref]`、`[--doc_type]`、`[--strict true]` |
 | VFS 拓扑与双链扫描 | `validate` / `links` | `[--note_ref]`（发现断链可用 `note-link --mode fix` 修复） |
-| 人类删改识别与 DOC+GitHub 统一同步 | `doc-status` / `doc-commit` / `doc-remote` / `doc-sync` | `doc-remote`: `[--remote_url] [--branch main] [--auto_push true\|false] [--git_layout in-vault\|detached] [--clear true]`；`doc-commit`: `--mode standard\|human-sync [--push true\|false] [--force true] [--reason]`（默认 `auto_push=true`）；`doc-sync`: `[--direction both\|pull\|push] [--bootstrap adopt-remote] [--force true]`（包含 `00-DropZone/`，排除 `.obsidian/`、`98-Archives/`、`source/` 与回收区） |
+| 人类删改识别与 DOC+GitHub 统一同步 | `doc-status` / `doc-commit` / `doc-remote` / `doc-sync` | `doc-remote`: `[--remote_url] [--branch main] [--auto_push true\|false] [--git_layout in-vault\|detached] [--clear true]`；`doc-commit`: `--mode standard\|human-sync [--push true\|false] [--force true] [--reason]`（使用独立动作 `--action doc-commit`，默认 `auto_push=true`）；`doc-sync`: `[--direction both\|pull\|push] [--bootstrap adopt-remote] [--force true]`（包含 `00-DropZone/`，排除 `.obsidian/`、`98-Archives/`、`source/` 与回收区） |
 | 孤岛附件清理与冷备封包 | `clean-attachments` / `archive-list` / `archive-pack` | `[--apply true]`、`[--month YYYYMM]`、`[--dry_run true]` |
 | 变更台账与 `chg_XX` 后悔药 | `change-list` / `change-get` / `undo` | `--change_id <chg_01>`，无损还原误改内容 |
 | 回收站与 30 天快照清扫 | `trash-purge` / `retention-sweep` | `[--days 30]`、`[--dry_run true]` |
@@ -25,8 +25,12 @@ description: Atlas 交付验货闸门、运维体检、自托管热内核守护�
 ## 2. 双轨评估协同说明（算子 60 分 + Subagent/自评 40 分）
 
 - 当 `guard --mode delivery` 返回 `operator_passed: true (60/60)` 后：
-  - **若有 Subagent 能力**：复制返回体 `semantic_evaluation.subagent_blind_review_prompt`，连同用户原始请求与待交付成果交给独立只读 Subagent 盲审打分（0~40分）；
-  - **若无 Subagent 能力**：主 Agent 对照 `semantic_evaluation.rubric`（完整性 15 + 真实性 15 + 可读性与零路径 10）自检过线后交付。
-- **红线提醒**：检测到人类手工删除引发断链时，严禁恢复已删文件；须先用 `note-update` 清理引用方断链后再 `guard --mode doc-commit --mode human-sync`。`05-Journal/` 日记永久豁免物理删除。
+  - **若有 Subagent 能力**：复制返回体 `semantic_evaluation.review_prompt`，连同用户原始请求与待交付成果交给独立只读 Subagent 盲审打分（0~40分）；
+  - **若无 Subagent 能力**：主 Agent 对照同一份 `semantic_evaluation.review_prompt`（完整性 15 + 真实性 15 + 可读性与零路径 10）自评。
+  - 两种审阅方式均单列语义得分与 PASS/FAIL；硬评 60/60 且语义 PASS 方可交付。
+- 提交完整交付范围，按[三类交付物评审规则](../../rules/rule-delivery-review.md)实读 atomic、moc、artifact。每件记录「句柄｜类型｜完整性/真实性/可读性｜结论｜依据位置｜修订动作」，再列关键断言及其跨卡原文依据。抽查分别列出已审与未审句柄，并说明选样理由。未审对象保留待审，局部通过不得签发整批通过。
+- **红线提醒**：检测到人类手工删除引发断链时，严禁恢复已删文件；须先用 `note-update` 清理引用方断链后再 `--action doc-commit --ref <vlt_XX> --mode human-sync`。`05-Journal/` 日记永久豁免物理删除。
 
 全局路由见 [AGENTS.md](../../AGENTS.md)，规范见 [rule-arch-multi-agent-collab.md](../../rules/rule-arch-multi-agent-collab.md) 与 [rule-core-vfs.md](../../rules/rule-core-vfs.md)。
+
+算子回执中的 reviewed_refs 与 unreviewed_refs 是送审时的初始状态。审阅者在最终交付报告中填写逐件与证据链模板并更新覆盖清单。自评须记录降级原因，先按原始请求固定验收问题，再重读正文、回查反例，对修订项给出复核结果。

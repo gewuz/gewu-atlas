@@ -25,6 +25,6 @@ description: Atlas 写与整理（note / note-patch / batch / daemon / vfs / art
 - **L1 单步微操作**（记日记、改标签、单卡软删）：写算子返回 `[DELIVERY_GATE: PASS (60/60)]` 即合规直交（0 额外开销）。
 - **L2/L3 创作与多卡整理**：
   1. **算子硬评估（60分底线）**：观察最后一步写算子返回的 `delivery_gate`（或显式跑 `guard --mode delivery --ref <vlt_XX>`），若提示 `BLOCKED`（如存在野目录或断链），按 `ORBIT` 指引修复至 `60/60 PASS`。
-  2. **语义评估（40分）**：L3 成果报告若有 Subagent 能力优先唤起独立只读 Subagent 按「完整性 15 + 真实性 15 + 可读性与零路径 10」盲审；无 Subagent 则主 Agent 自检达标（总分 ≥ 60）后交付。
+  2. **语义评估（40分）**：L3 成果报告若有 Subagent 能力优先唤起独立只读 Subagent 按「完整性 15 + 真实性 15 + 可读性与零路径 10」盲审；无 Subagent 则主 Agent 按同一标准自评；分别记录硬评与语义审阅结果；两项均通过方可交付。漏答核心诉求、关键结论无依据、拼贴检索碎片或泄露物理路径均判语义审阅失败。
 
 全局路由见 [AGENTS.md](../../AGENTS.md)，规范见 [rule-core-vfs.md](../../rules/rule-core-vfs.md)、[rule-core-schema.md](../../rules/rule-core-schema.md) 与 [rule-core-linking.md](../../rules/rule-core-linking.md)。

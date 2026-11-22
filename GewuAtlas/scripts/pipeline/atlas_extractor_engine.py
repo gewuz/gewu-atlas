@@ -134,7 +134,7 @@ def _strip_leading_heading(body: str) -> str:
     lines = (body or "").strip().splitlines()
     while lines and not lines[0].strip():
         lines.pop(0)
-    if lines and lines[0].lstrip().startswith("#"):
+    if lines and re.match(r"^#(?:[ \t]|$)", lines[0].lstrip()):
         lines.pop(0)
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -1372,12 +1372,12 @@ def note_extract(
             raise VaultStoreError(
                 "E_PARAM_MISSING",
                 f"长篇文献（>{len(src_body)} 字）请先经 note-slice --note_ref {note_ref} --adaptive true 生成 TOC 与切片，"
-                "再读取切片提炼并传入 --title '<原子命题>' --summary '<一句断言>' --content '<四段式蒸馏正文>'（可用 --action atomic-extract --template 查看写法）",
+                "再读取切片提炼并传入 --title '<原子命题>' --summary '<一句断言>' --content '<围绕一个主张写清依据、推理和适用边界，段落自定>'（可用 --action atomic-extract --template 查看写法）",
                 exit_code=1,
             )
         raise VaultStoreError(
             "E_PARAM_MISSING",
-            "atomic-extract 禁止直接复制切片或原文，必须同时传入提炼后的 --title 与 --content（可用 --action atomic-extract --template 查看完整示例）",
+            "atomic-extract 禁止直接复制切片或原文，须传入提炼后的 --title 与 --content，一卡一主张，按类型说明依据、推理和适用边界（可用 --action atomic-extract --template 查看完整示例）",
             exit_code=1,
         )
 

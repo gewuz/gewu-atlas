@@ -90,6 +90,13 @@ def _compact_prefix(doc_stem: str, custom_prefix: Optional[str], max_len: int = 
     return _slugify_filename(doc_stem)[:max_len] or "doc"
 
 
+class SliceBatch:
+    """Paths added under the ingest lock; public handles are resolved together at batch end."""
+    def __init__(self, vault_dir):
+        self.paths = set(_scan_vault_markdowns(vault_dir))
+        self.names = {Path(path).name.casefold() for path in self.paths}
+
+
 def note_slice_adaptive(
     *,
     vault_dir: Path,
@@ -105,6 +112,7 @@ def note_slice_adaptive(
     target_chars: Optional[int] = None,
     custom_prefix: Optional[str] = None,
     idempotent: bool = False,
+    batch: Optional[SliceBatch] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     if min_chars < 50:
         min_chars = 50
@@ -156,18 +164,21 @@ def note_slice_adaptive(
     cluster_dir = slices_base / doc_stem
     if cluster_dir.exists() and any(cluster_dir.glob("*.md")):
         if idempotent:
-            all_md = _scan_vault_markdowns(vault_dir)
-            n_map = note_reg.sync_paths(vault_ref, all_md)
+            all_md = [] if batch else _scan_vault_markdowns(vault_dir)
+            n_map = None if batch else note_reg.sync_paths(vault_ref, all_md)
+            def lookup(path):
+                rel = path.relative_to(vault_dir).as_posix()
+                return rel if batch else n_map.get(rel)
             md_files = sorted(cluster_dir.glob("*.md"))
             toc_fp = next((p for p in md_files if p.stem.startswith("TOC-")), None)
             slice_fps = [p for p in md_files if p != toc_fp]
-            toc_ref = n_map.get(toc_fp.relative_to(vault_dir).as_posix()) if toc_fp else None
+            toc_ref = lookup(toc_fp) if toc_fp else None
             return {
                 "vault_ref": vault_ref,
                 "source_note_ref": note_ref,
                 "toc_note_ref": toc_ref,
                 "slice_count": len(slice_fps),
-                "slices": [{"note_ref": n_map.get(p.relative_to(vault_dir).as_posix()), "title": p.stem} for p in slice_fps],
+                "slices": [{"note_ref": lookup(p), "title": p.stem} for p in slice_fps],
                 "already_sliced": True,
                 "path_sealed": True,
             }, all_md
@@ -179,7 +190,7 @@ def note_slice_adaptive(
         raise VaultStoreError("E_PARAM_INVALID", "源文档没有可切片正文", exit_code=1)
     slice_status = "active" if dom["default_mode"] == "auto" else "pending"
     target_pid = str(dom["project_id"])
-    existing = {Path(path).name.casefold() for path in _scan_vault_markdowns(vault_dir)}
+    existing = batch.names if batch else {Path(path).name.casefold() for path in _scan_vault_markdowns(vault_dir)}
     toc_title = f"TOC-{doc_stem}"
     toc_rel = validate_note_rel_path(f"{cluster_dir.relative_to(vault_dir).as_posix()}/{toc_title}.md")
     base_pfx = generate_compact_prefix(doc_stem, custom_prefix)
@@ -286,8 +297,14 @@ def note_slice_adaptive(
             _atomic_write_md(src_path, updated_src)
         source_processed = True
 
-    all_md = _scan_vault_markdowns(vault_dir)
-    mapping = note_reg.sync_paths(vault_ref, all_md)
+    if batch:
+        batch.paths.update(all_created)
+        batch.names.update(names)
+        all_md = []
+        mapping = {rel: rel for rel in all_created}
+    else:
+        all_md = _scan_vault_markdowns(vault_dir)
+        mapping = note_reg.sync_paths(vault_ref, all_md)
     slice_refs = [
         {"note_ref": mapping[srel], "slice_id": sid, "title": stitle}
         for srel, (sid, _stem, stitle, _ssum) in zip(created_rels, slice_meta_rows)

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -607,6 +608,7 @@ def _convert_single_local_file(
     source_url: Optional[str] = None,
     target_zone: Optional[str] = None,
     subdir: Optional[str] = None,
+    isolated_worker: bool = False,
     fmt_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     fmt_options = fmt_options or {}
@@ -628,6 +630,13 @@ def _convert_single_local_file(
     if fmt_options.get("encoding"):
         env["GEWU_ATLAS_TEXT_ENCODING"] = str(fmt_options["encoding"])
     extra_args = _format_arguments(converter, fmt_options)
+
+    def normalize_output(path):
+        if isolated_worker:
+            # The in-process normalizer redirects process-global stdout and stderr.
+            _run_py_tool(fmt_py, "md_normalizer.py", [str(path)], env=env, ws_root=ws_root, vault_dir=vault_dir)
+        else:
+            _normalize_md_inprocess(path)
 
     if converter == "note_refiner.py":
         pid_arg = Path(domain["domain_root"]).name if domain["scope"] == "project" else "AI-Zone"
@@ -677,7 +686,7 @@ def _convert_single_local_file(
                 out_file = dest_file
                 target_rel = out_file.relative_to(vault_dir).as_posix()
             if not deep:
-                _normalize_md_inprocess(out_file)
+                normalize_output(out_file)
             else:
                 chunks_meta = _extract_deep_chunks(fmt_py, out_file, env=env, ws_root=ws_root, vault_dir=vault_dir)
             title, status = _hydrate_output_card(
@@ -745,7 +754,7 @@ def _convert_single_local_file(
         out_file.write_text(raw, encoding="utf-8")
     chunks_meta = None
     if not deep:
-        _normalize_md_inprocess(out_file)
+        normalize_output(out_file)
     else:
         chunks_meta = _extract_deep_chunks(fmt_py, out_file, env=env, ws_root=ws_root, vault_dir=vault_dir)
 
@@ -821,44 +830,138 @@ def _normalize_fetch_url(url: str) -> str:
     return u
 
 
-def _find_existing_url_note(
-    lib_dir: Path,
-    vault_dir: Path,
-    note_reg: KekNoteRegistry,
-    vault_ref: str,
-    source_url: str,
-    fetch_url: str,
-) -> Optional[Dict[str, Any]]:
-    """Check if source_url is already ingested in target lib_dir to prevent duplicate downloads on retry."""
-    if not lib_dir.is_dir():
-        return None
-    targets = {u.strip().rstrip("/").lower() for u in (source_url, fetch_url) if u and u.strip()}
-    if not targets:
-        return None
+def _url_key(url):
+    return url.strip().rstrip("/").lower()
+
+
+def _url_index(lib_dir, vault_dir):
+    index = {}
     for fp in sorted(lib_dir.rglob("*.md")):
         if fp.is_symlink() or not fp.is_file() or fp.name.startswith("."):
             continue
         try:
-            raw = fp.read_text(encoding="utf-8", errors="replace")
-            meta, _, has_fm = extract_frontmatter(raw)
+            meta, _, _ = extract_frontmatter(fp.read_text(encoding="utf-8", errors="replace"))
         except Exception:
+            # A damaged unrelated card must not block ingestion of the rest of the library.
             continue
-        if not has_fm:
-            continue
-        existing_u = str(meta.get("source_url") or "").strip().rstrip("/").lower()
-        if existing_u and existing_u in targets:
-            all_md = _scan_vault_markdowns(vault_dir)
-            n_map = note_reg.sync_paths(vault_ref, all_md)
-            rel = fp.relative_to(vault_dir).as_posix()
-            return {
-                "status": "already_ingested",
-                "already_ingested": True,
-                "source_name": source_url,
-                "note_ref": n_map.get(rel),
-                "note_name": fp.stem,
-                "title": str(meta.get("title") or fp.stem),
-            }
-    return None
+        key = _url_key(str(meta.get("source_url") or ""))
+        if key:
+            index.setdefault(key, (fp.relative_to(vault_dir).as_posix(), meta.get("title") or fp.stem))
+    return index
+
+
+def _lookup_url(index, url):
+    matches = [index[k] for k in (_url_key(url), _url_key(_normalize_fetch_url(url))) if k in index]
+    return min(matches) if matches else None
+
+
+active_preparation = ContextVar("atlas_url_preparation", default=None)
+
+
+class UrlPreparation:
+    """Snapshot the destination identity, then prepare isolated files without a registry or write lock."""
+
+    def __init__(self, vault, domain, library, urls, index, options):
+        self.vault = vault
+        self.domain = domain
+        self.library = library
+        self.missing = [url for url in urls if not _lookup_url(index, url)]
+        self.options = options
+        self.items = {}
+        self.index = index if not self.missing else None
+        self.fmt_py = None
+
+    def prepare(self, temp):
+        from concurrent.futures import ThreadPoolExecutor
+        self.fmt_py = _resolve_fmt_python()
+
+        def one(pair):
+            i, url = pair
+            work = temp / str(i)
+            download = work / "download"
+            try:
+                download.mkdir(parents=True)
+                source = _download_url_safe(self.vault, _normalize_fetch_url(url), download,
+                                            library=self.library, ws_root=temp)
+                shadow = work / "vault"
+                domain = dict(self.domain, domain_root=shadow / self.domain["domain_root"].relative_to(self.vault))
+                domain["domain_root"].mkdir(parents=True)
+                # Converters can archive/move their input. Keep the download for collision recovery.
+                copy = shadow / ".input" / source.name
+                copy.parent.mkdir()
+                shutil.copy2(source, copy)
+                item = _convert_single_local_file(fmt_py=self.fmt_py, isolated_worker=True, src_file=copy, vault_dir=shadow,
+                    ws_root=temp, domain=domain, dry_run=False, source_url=url, **self.options)
+                return url, (source, shadow, item)
+            except VaultStoreError as exc:
+                if exc.code in ("E_URL_NETWORK", "E_URL_POLICY"):
+                    return url, exc
+                return url, VaultStoreError(exc.code, "URL 下载或转换失败，请检查来源与文档格式", exit_code=exc.exit_code)
+            except Exception:
+                return url, VaultStoreError("E_URL_FAILED", "下载或转换失败", exit_code=1)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(self.missing))) as pool:
+            self.items = dict(pool.map(one, enumerate(self.missing)))
+
+
+def plan_url_preparation(vault, vault_ref, proj_reg, args):
+    urls = _parse_url_batch(args.get("url"), args.get("urls"))
+    if len(urls) < 2:
+        return None
+    _validate_crawl_depth(args.get("depth"))
+    domain = resolve_domain_scope(vault_dir=vault, vault_ref=vault_ref, proj_reg=proj_reg,
+                                  explicit_project_ref=args.get("project_ref"), scope=args.get("scope") or "auto")
+    options = dict(by=args.get("by"), deep=bool(args.get("deep")), annotate_images=False,
+                   target_zone=args.get("target_zone"), subdir=args.get("subdir"))
+    library, _, _ = _resolve_fmt_target_dir(vault, domain, options["target_zone"], options["subdir"])
+    return UrlPreparation(vault, domain, library, urls, _url_index(library, vault), options)
+
+
+def _install_prepared(prepared, url, vault_dir, domain, library, fmt_py, ws_root):
+    if prepared.vault != vault_dir or prepared.domain != domain or prepared.library != library:
+        raise VaultStoreError("E_PARAM_CONFLICT", "准备期间入库目标已变更，请重新提交", exit_code=1)
+    result = prepared.items.get(url)
+    if isinstance(result, Exception):
+        raise result
+    if result is None:
+        raise VaultStoreError("E_PARAM_CONFLICT", "准备期间已有来源被移除，请重新提交", exit_code=1)
+    source, shadow, item = result
+    if not item.get("output_rel_path"):
+        raise VaultStoreError("E_FMT_FAILED", "转换未产生文档", exit_code=1)
+    files = [p for p in shadow.rglob("*") if p.is_file()
+             and not any(part.startswith(".") for part in p.relative_to(shadow).parts)]
+    targets = [(p, vault_dir / p.relative_to(shadow)) for p in files]
+    output = vault_dir / item["output_rel_path"]
+    allowed_dirs = (vault_dir / "99-Assets" / "10-Attachments",
+                    vault_dir / "99-Assets" / "98-Archives", resolve_archive_dir(vault_dir, domain),
+                    domain["domain_root"] / "99-Assets" / "98-Archives")
+    for src, dst in targets:
+        if dst != output and not any(directory in dst.parents for directory in allowed_dirs):
+            raise VaultStoreError("E_FMT_FAILED", "转换产物超出预期的附件或归档目录", exit_code=1)
+        if src.is_symlink() or dst.resolve() != dst or vault_dir not in dst.resolve().parents:
+            raise VaultStoreError("E_SECURITY_VIOLATION", "拒绝通过符号链接安装转换产物", exit_code=2)
+    if not any(dst == output for _, dst in targets):
+        raise VaultStoreError("E_FMT_FAILED", "转换产物缺少正文", exit_code=1)
+    if any(dst.exists() for _, dst in targets):
+        # Reuse the download and let the original converter rebase colliding names and attachment links.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix=".url-ingest-", dir=vault_dir) as temp:
+            local = Path(temp) / source.name
+            shutil.copy2(source, local)
+            return _convert_single_local_file(fmt_py=fmt_py, src_file=local, vault_dir=vault_dir,
+                ws_root=ws_root, domain=domain, dry_run=False, source_url=url, **prepared.options)
+    installed = []
+    try:
+        for src, dst in targets:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with dst.open("xb") as out, src.open("rb") as inp:
+                installed.append(dst)
+                shutil.copyfileobj(inp, out)
+    except Exception:
+        for dst in reversed(installed):
+            dst.unlink(missing_ok=True)
+        raise
+    return item
 
 
 def _extract_url_body_metrics(body: str, source_url: str, *, max_links: int = 30) -> Tuple[int, int, List[str]]:
@@ -1074,6 +1177,8 @@ def _convert_single_url(
     target_zone: Optional[str] = None,
     subdir: Optional[str] = None,
     defer_sync: bool = False,
+    url_index=None,
+    prepared=None,
     min_chars: int = 300,
     depth: int = 1,
     parent_url: Optional[str] = None,
@@ -1112,8 +1217,15 @@ def _convert_single_url(
         }
 
     fetch_url = _normalize_fetch_url(url)
-    existing_dup = _find_existing_url_note(lib_dir, vault_dir, note_reg, vault_ref, url, fetch_url)
-    if existing_dup is not None:
+    index = url_index if url_index is not None else _url_index(lib_dir, vault_dir)
+    hit = _lookup_url(index, url)
+    if hit:
+        rel, title = hit
+        existing_dup = {"status": "already_ingested", "already_ingested": True, "source_name": url,
+                        "output_rel_path": rel, "note_name": Path(rel).stem, "title": title}
+        if not defer_sync:
+            existing_dup.pop("output_rel_path")
+            existing_dup["note_ref"] = note_reg.sync_paths(vault_ref, _scan_vault_markdowns(vault_dir)).get(rel)
         existing_dup["target_zone"] = zone_key
         existing_dup["domain_scope"] = domain["scope"]
         existing_dup["project_ref"] = domain["project_ref"]
@@ -1123,15 +1235,18 @@ def _convert_single_url(
 
     # One download/type-dispatch path for direct URLs and URL lists. A PDF URL is
     # not a webpage, regardless of its suffix or the server's Content-Type.
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix=".url-ingest-", dir=vault_dir) as temp:
-        source = _download_url_safe(vault_dir, fetch_url, Path(temp), library=lib_dir, ws_root=ws_root)
-        item = _convert_single_local_file(
-            fmt_py=fmt_py, src_file=source, vault_dir=vault_dir, ws_root=ws_root,
-            domain=domain, by=by, dry_run=False, deep=deep,
-            annotate_images=annotate_images, source_url=url,
-            target_zone=target_zone, subdir=subdir,
-        )
+    if prepared is not None:
+        item = _install_prepared(prepared, url, vault_dir, domain, lib_dir, fmt_py, ws_root)
+    else:
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix=".url-ingest-", dir=vault_dir) as temp:
+            source = _download_url_safe(vault_dir, fetch_url, Path(temp), library=lib_dir, ws_root=ws_root)
+            item = _convert_single_local_file(
+                fmt_py=fmt_py, src_file=source, vault_dir=vault_dir, ws_root=ws_root,
+                domain=domain, by=by, dry_run=False, deep=deep,
+                annotate_images=annotate_images, source_url=url,
+                target_zone=target_zone, subdir=subdir,
+            )
     item["source_name"] = url
     rel_out = item.get("output_rel_path")
     out_md_p = (vault_dir / str(rel_out)) if rel_out else (Path(item["_out_path"]) if item.get("_out_path") else None)
@@ -1142,6 +1257,8 @@ def _convert_single_url(
         if override is not None:
             return override
         item.update(metrics)
+        if rel_out and out_md_p.is_file() and "source_url" in allowed_fields_for_doc_type(target_doc_type):
+            index.setdefault(_url_key(url), (rel_out, item.get("title") or out_md_p.stem))
     if defer_sync:
         return item
     all_md = _scan_vault_markdowns(vault_dir)
@@ -1358,7 +1475,7 @@ def _to_public_fmt_item(item: Dict[str, Any], note_map: Dict[str, str], vault_di
     out = dict(item)
     if rel:
         out["note_ref"] = note_map.get(rel)
-    if out.get("note_name") and out.get("title"):
+    if not out.get("already_ingested") and out.get("note_name") and out.get("title"):
         out["wikilink"] = f"[[{out['note_name']}|{out['title']}]]"
     return out
 
@@ -1406,6 +1523,7 @@ def run_fmt(
     fmt_options: Optional[Dict[str, Any]] = None,
     min_chars: Optional[int] = None,
     depth: Optional[int] = None,
+    prepared=None,
     parent_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute KEK-blinded multimodal `fmt` pipeline across all 116 converters."""
@@ -1425,7 +1543,8 @@ def run_fmt(
         import codecs
         try: codecs.lookup(str(fmt_options["encoding"]))
         except LookupError as exc: raise VaultStoreError("E_PARAM_INVALID", "未知文本编码", exit_code=1) from exc
-    fmt_py = _resolve_fmt_python()
+    # A locked all-hit replay never launches a converter.
+    fmt_py = prepared.fmt_py if prepared is not None else _resolve_fmt_python()
     pre_ticket: Optional[Dict[str, Any]] = None
     if ticket_id and not dry_run and not (normalize and check):
         pre_ticket = ensure_doc_ticket(
@@ -1518,6 +1637,9 @@ def run_fmt(
         thin_batch: List[Dict[str, Any]] = []
         disc_batch: List[Dict[str, Any]] = []
         blocked_batch: List[Dict[str, Any]] = []
+        lib_dir, _, _ = _resolve_fmt_target_dir(vault_dir, domain, target_zone, subdir)
+        index = (prepared.index if prepared and prepared.index is not None else
+                 {} if dry_run else _url_index(lib_dir, vault_dir))
         for single_u in url_list:
             try:
                 res_one = _convert_single_url(
@@ -1534,7 +1656,7 @@ def run_fmt(
                     vault_ref=vault_ref,
                     target_zone=target_zone,
                     subdir=subdir,
-                    defer_sync=not dry_run,
+                    defer_sync=not dry_run, url_index=index, prepared=prepared,
                     min_chars=eff_min_chars,
                     depth=eff_depth,
                     parent_url=parent_url,
@@ -1554,7 +1676,7 @@ def run_fmt(
         if not dry_run:
             all_md = _scan_vault_markdowns(vault_dir)
             n_map = note_reg.sync_paths(vault_ref, all_md)
-            pub_batch = [it if it.get("already_ingested") else _to_public_fmt_item(it, n_map, vault_dir) for it in raw_batch]
+            pub_batch = [_to_public_fmt_item(it, n_map, vault_dir) for it in raw_batch]
             if pub_batch:
                 _append_journal_event(vault_dir, note_reg, vault_ref, "", f"批量 URL 入库（depth={eff_depth}，成功 {len(pub_batch)} 篇，待追查 {len(thin_batch)} 篇，自动删除 {len(disc_batch)} 篇，失败 {len(blocked_batch)} 篇）")
             log_ref_batch = _append_url_ingest_log(
@@ -1847,7 +1969,7 @@ def run_url_ingest(
             note_reg=note_reg,
             project_ref=project_ref,
             scope=scope,
-            url=url,
+            url=url, prepared=active_preparation.get(),
             urls=urls,
             by=by,
             dry_run=dry_run,

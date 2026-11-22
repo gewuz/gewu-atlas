@@ -16,8 +16,8 @@
      - 问答默认由 `note-search`（`--mode passage`，返回 `[QA_GATE: PASSAGE_READY]` 完整命中段）直接循证作答；仅当需要完整上下文或跨卡深挖（`--mode deep`）时再调 `note-get --note_refs ...` 补读全文；
      - 输出前在脑内对照 **通用三维量表（① 完整性 15分：答全用户原话诉求；② 真实性 15分：结论绑定真实 `nte_XX` 句柄且未命中时诚实声明；③ 可读性 10分：连贯成文禁拼贴列表、零物理路径）** 自检后交付。
    - **L3 复合重度任务**（开课题多源调研、批量入库+切片+萃取+织网）：
-     - 每次写算子出口自动顺风车返回 `delivery_gate` 状态；收尾可显式调用 `./gewu atlas --action guard --ref <vlt_XX> --mode delivery [--project_ref <prj_XX>] [--note_refs ...]` 完成 **60 分算子硬评估**（空间净空 15 + Schema 15 + 双链与引用真值 15 + 审批边界 15）；
-     - 随后执行 **40 分语义评估**：**若当前 Agent 具备 Subagent 调用能力，优先唤起独立只读 Subagent 按三维量表盲审打分；若无 Subagent 能力，则由主 Agent 显式自我评估**，总分 ≥ 60 且无硬伤方可交付。
+     - 每次写算子出口自动顺风车返回 `delivery_gate` 状态；收尾必须调用 `./gewu atlas --action guard --ref <vlt_XX> --mode delivery [--project_ref <prj_XX>] [--note_refs ...]` 完成 **60 分算子硬评估**（空间净空 15 + Schema 15 + 双链与引用真值 15 + 审批边界 15）；
+     - 随后执行 **40 分语义评估**：**若当前 Agent 具备 Subagent 调用能力，优先唤起独立只读 Subagent 按三维量表盲审打分；若无 Subagent 能力，则由主 Agent 显式自我评估**，分别记录硬评与语义审阅结果；两项均通过方可交付。漏答核心诉求、关键结论无依据、拼贴检索碎片或泄露物理路径均判语义审阅失败。
 3. **统一门面与零路径盲化**：工作区根执行 `./gewu atlas <cmd>`（或 `./gewu.command atlas <cmd>`）；严禁原生探测 `Volumes/GewuAtlas-data/`、`scripts/app_core/`、`.local/`、`.runtime/`；对外只传短句柄（`vlt_XX`/`prj_XX`/`nte_XX`/`slp_XX`/`trs_XX`）；遇 `GUARD: INPUT_REQUIRED` 或 `GUARD: HALTED` 立即停手汇报。
 4. **高效执行约定（自托管热内核 + 局部/批处理原语，免宿主 MCP 依赖）**：
    - **热内核启停**：L2/L3 多步任务建议开工 `./gewu atlas daemon start [--preload-vault <vlt_XX>]`、收工 `./gewu atlas daemon stop`（空闲默认 600s 自动自毁清空内存）；运行期间所有常规 `--action` 自动复用内存热索引与热 KEK，未启动或沙箱受限自动无感降级（支持 MCP 的宿主亦可选 `./gewu atlas mcp`）。

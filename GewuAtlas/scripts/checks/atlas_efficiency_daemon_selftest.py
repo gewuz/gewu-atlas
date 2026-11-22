@@ -744,6 +744,24 @@ def main() -> int:
         assert "change_id" not in ro_bres["data"] and "delivery_gate" not in ro_bres["data"], f"read-only batch must skip write hooks: {ro_bres['data']}"
         assert ro_bres["data"]["results"][2]["data"]["count"] >= 1, f"chained $g.note_refs note-get failed: {ro_bres['data']['results'][2]}"
 
+        for second_id in ("step_2", None):
+            second = {"action": "project-brief"}
+            if second_id:
+                second["id"] = second_id
+            payload = dict(ro_batch_payload, steps=[{"action": "project-brief", "id": "step_2"}, second])
+            rc, report, _ = _run(CLI_PATH, ["--json-stdin", "-"], env=env, stdin_text=json.dumps(payload))
+            assert rc != 0 and report["code"] == "E_PARAM_INVALID", report
+
+        payload = dict(ro_batch_payload, on_error="continue", steps=[
+            {"id": "missing", "action": "note-get", "args": {"note_ref": "nte_999999"}},
+            {"action": "note-get", "args": {"note_ref": "$missing.note_ref"}},
+            {"action": "project-brief", "args": {"project_ref": pref}},
+        ])
+        rc, report, _ = _run(CLI_PATH, ["--json-stdin", "-"], env=env, stdin_text=json.dumps(payload))
+        rows = report["data"]["results"]
+        assert rc != 0 and [row["ok"] for row in rows] == [False, False, True], report
+        assert rows[1]["code"] == "E_BATCH_REF_NOT_FOUND", report
+
         # Patch miss must return available headings outline without extra note-get
         rc, miss_res, _ = _run(
             CLI_PATH,
@@ -914,8 +932,16 @@ def main() -> int:
         assert rc == 0 and len(pb_vault["data"].get("projects") or []) >= 1, f"project-brief vault projects list empty: {pb_vault['data']}"
         assert pb_vault["data"]["projects"][0].get("title"), f"project-brief missing project title: {pb_vault['data']['projects']}"
         ni_mtime_before = ni_file.stat().st_mtime_ns
-        rc, dg_res, _ = _run(CLI_PATH, ["--action", "guard", "--ref", vref, "--project_ref", pref, "--mode", "delivery", "--no_daemon", "true"], env=env)
+        rc, dg_res, _ = _run(CLI_PATH, ["--action", "guard", "--ref", vref, "--project_ref", pref, "--mode", "delivery", "--note_refs", moc_ref, "--no_daemon", "true"], env=env)
         assert rc == 0 and dg_res.get("ok")
+        review = dg_res["data"]["semantic_evaluation"]
+        assert review["review_status"] == "pending"
+        assert review["reviewed_refs"] == [] and review["unreviewed_refs"] == [moc_ref]
+        prompt = review["review_prompt"]
+        assert prompt == review["subagent_blind_review_prompt"]
+        assert all(section in prompt for section in ("## atomic", "## moc", "## artifact", "尝试反证", "PARTIAL"))
+        assert review["item_review_template"]["verdict"] is None
+        assert "source_locations" in review["chain_review_template"]
         assert ni_file.stat().st_mtime_ns == ni_mtime_before, "guard --mode delivery corrupted/rewrote notes_index cache with wrong KEK!"
 
         # 9g. P0-9 & P2-4: yamlmini YAML 1.2 & nested seq mapping, volume guard ./gewu.command & pre_tool_use_guard wildcard/bash write

@@ -4,8 +4,8 @@ uc_id: "UC-01-web-ingest-and-extract"
 title: "联网抓源、切片与原子萃取避坑路书"
 scenarios: "网页/URL抓取入库、ingest --auto_slice、fmt 运行时预检、atomic-extract 多源 provenance 与逗号切片防错、note-link 批修与相对图片断链清理"
 tags: ["Ingest", "URL", "Slice", "Extract", "Preflight", "Provenance", "LinkFix"]
-updated: "2026-11-20"
-updated_by: "researcher"
+updated: "2026-11-22"
+updated_by: "Codex"
 ---
 
 ## 1. 适用场景与触发信号
@@ -36,4 +36,4 @@ updated_by: "researcher"
 2. **分批快摄**：`./gewu.command atlas --action ingest --ref <vlt_01> [--project_ref <prj_01>] --urls "<URL1>,<URL2>" --auto_slice true`（每批 ≤ 5 条，串行执行，总有效源控制在 6~10 篇、活跃切片 < 100 片）。
 3. **证据映射与逗号预检先于萃取**：用 `python3 - << 'PY'` 紧凑管道批量 `note-get` 实读切片，建立 `精确事实 -> 精确切片句柄` 映射表，并同步筛出 `"," in note_name` 的切片以防 `provenance` 失配。
 4. **单脚本串行萃取 + 一步修链**：多源卡传 `--note_ref` + `--provenance`（禁混 `--slice_refs`）；萃取完成后紧接运行 `note-link --mode fix --project_ref <prj_XX>` 与 `guard --mode links` 扫清相对图片伪断链，确保进入 MOC 前已稳居 `60/60`。
-5. **原子卡分层与熔断边界**：官方机制事实落 `OBJ`，跨源综合落 `SYN`，可验证判断落 `HYP`，每卡固定「断言 → 依据 → 边界」三段；同错连败 2 次或遇 `GUARD: HALTED` 立即停手汇报，不盲试。
+5. **原子卡分层与熔断边界**：事实或规范落 `OBJ`，经验取舍落 `SUB`，跨源推导落 `SYN`，待证解释落 `HYP`。一卡一主张，写清依据、推理和适用边界，段落按材料组织；同错连败 2 次或遇 `GUARD: HALTED` 立即停手汇报，不盲试。

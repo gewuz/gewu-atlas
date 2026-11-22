@@ -17,13 +17,16 @@
   "track_capabilities": [],
   "suite_prefixes": {
     "integration": [
-      "test_gewu_atlas_domain."
+      "test_gewu_atlas_domain.",
+      "atlas_efficiency_daemon_selftest."
     ],
     "consistency": [
-      "checks.atlas_consistency_selftest."
+      "checks.atlas_consistency_selftest.",
+      "atlas_consistency_selftest."
     ],
     "runner": [
-      "test_atlas_test_runner."
+      "test_atlas_test_runner.",
+      "atlas_runner_selftest."
     ]
   },
   "parallel_safe_test_ids": [

@@ -333,10 +333,10 @@ command_groups:
     description: "字典防污染巡检、健康体检、孤岛清理、月度冷备、快照撤回 (undo) 与 DOC Git 同步"
     actions:
       - name: "guard"
-        mode: "read"
+        mode: "read/write"
         surface: "ops"
         slots: ["[--ref]", "[--mode]", "[--note_ref]", "[--doc_type]", "[--change_id]", "[--strict]", "[--apply]", "[--force]", "[--days]", "[--dry_run]", "[--reason]", "[--remote_url]", "[--branch]", "[--auto_push]", "[--push]", "[--direction]", "[--fetch]", "[--clear]", "[--bootstrap]", "[--git_layout]"]
-        summary: "统一运维体检入口（--mode health|schema|schema-list|validate|links|doc-status|doc-commit|doc-remote|doc-sync|clean-attachments|archive-list|archive-pack|trash-purge|retention-sweep|change-list|change-get|undo）"
+        summary: "health/schema/schema-list/validate/links/archive-list/change-list/change-get 查询；doc-status 可 fetch；delivery/verify 可写 Manifest；clean-attachments 仅 apply 时清理，archive-pack/trash-purge/retention-sweep 支持 dry_run 预览；undo 写本地；doc-remote 可修改远端配置；doc-commit/doc-sync 可写本地或推送远端"
       - name: "schema-list"
         mode: "read"
         slots: ["[--doc_type]"]
@@ -473,10 +473,10 @@ command_groups:
         slots: ["[--ref]", "--query", "[--mode]", "[--terms]", "[--zone]", "[--project_ref]", "[--doc_type]", "[--epistemic_type]", "[--status]", "[--exclude_zones]", "[--exclude_project_refs]", "[--exclude_pending]", "[--exclude_draft]", "[--boost]", "[--alpha]", "[--beta]", "[--hops]", "[--deep]", "[--min_score]", "[--snippet_width]", "[--summary_width]", "[--no_snippet]", "[--no_cache]", "[--fields]", "[--link_fields]", "[--include_archived]", "[--private]", "[--all_vaults]", "[--top_k]"]
         summary: "三档智能检索（--mode locate 定位清单 | passage 默认完整段落直答 | deep 摘要+入出链Top3）与 BM25+双链图增益排序"
       - name: "delivery-check"
-        mode: "read"
+        mode: "write"
         surface: "ops"
         slots: ["--ref", "[--project_ref]", "[--note_ref]", "[--note_refs]"]
-        summary: "执行 60 分算子硬评估（空间净空/Schema/双链真值/审批边界）并输出 40 分 Subagent/自评量表协议"
+        summary: "执行 60 分算子硬评估（空间净空/Schema/双链真值/审批边界），同步课题 Manifest 并输出 40 分 Subagent/自评量表协议"
       - name: "usecase"
         mode: "read/write"
         surface: "core"

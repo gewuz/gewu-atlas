@@ -844,6 +844,11 @@ def moc_sync(
             hay = " ".join([note_title, summary, stem, body, *tags, *aliases]).casefold()
             if topic_want not in hay:
                 continue
+        if note_title == stem and re.fullmatch(r"URL-[0-9a-f]+", stem):
+            for heading in re.findall(r"(?m)^# +([^\n]+)", body):
+                if heading.strip() != stem and not re.search(r"[<>\[\]|]", heading):
+                    note_title = heading.strip()
+                    break
         ep_type = str(meta.get("type") or "").strip().upper() or "SYN"
         grouped.setdefault(zone, []).append((note_title, stem, summary, ep_type, rel))
         included_refs.append(mapping[rel])
@@ -865,6 +870,13 @@ def moc_sync(
         filter_parts.append(f"分区={zone_want}")
     if filter_parts:
         index_lines.extend(["", f"> [!NOTE] 筛选条件：{' | '.join(filter_parts)}"])
+
+    from collections import Counter
+    stem_counts = Counter(Path(rel).stem.casefold() for rel in rels)
+
+    def index_link(stem, title, rel):
+        target = rel[:-3] if stem_counts[stem.casefold()] > 1 else stem
+        return f"[[{target}|{title}]]" if target != title else f"[[{target}]]"
 
     section_counts: Dict[str, int] = {}
     for z in _MOC_ZONE_ORDER:
@@ -893,8 +905,8 @@ def moc_sync(
                 index_lines.append("*(暂无)*")
                 continue
             for note_title, stem, summary, _ep, _rel in layer_buckets[gi]:
-                display = f"[[{stem}|{note_title}]]" if note_title != stem else f"[[{stem}]]"
-                index_lines.append(f"- {display}：{summary}")
+                display = index_link(stem, note_title, _rel)
+                index_lines.append(f"- {display}")
                 node_records.append((f"n{len(node_records)}", _moc_short_label(note_title, stem, hyp=(gi == 2)), gi))
 
         index_lines.extend(["", "### Layer 4 全景逻辑流向脑图", "", "```mermaid", _MOC_MERMAID_INIT, "flowchart LR"])
@@ -927,14 +939,16 @@ def moc_sync(
         index_lines.append(f"### {label}")
         index_lines.append("")
         for note_title, stem, summary, _ep, _rel in entries:
-            display = f"[[{stem}|{note_title}]]" if note_title != stem else f"[[{stem}]]"
-            index_lines.append(f"- {display}：{summary}")
+            display = index_link(stem, note_title, _rel)
+            index_lines.append(f"- {display}")
 
     if not section_counts:
         index_lines.extend(["", "- 暂无符合筛选条件的活跃卡片。"])
     index_lines.append("")
     index_lines.append(_MOC_END)
-    managed_block = "\n".join(index_lines)
+    appendix = ["> [!info]- 资料索引与关系图"]
+    appendix.extend("> " + line if line else ">" for line in index_lines[1:-1])
+    managed_block = "\n".join([_MOC_START, *appendix, _MOC_END])
 
     obj_c = len(layer_buckets[0])
     sub_syn_c = len(layer_buckets[1])
@@ -960,18 +974,6 @@ def moc_sync(
         "unmapped_atomic_count": unmapped_c,
         "gaps_hint": gaps_hint,
     }
-    gap_bullets = "\n".join(f"- {g}" for g in gaps_hint) if gaps_hint else "- （结构分层完整，请 Agent 进一步核查是否缺少反例边界、工程失效案例或上游理论衔接）"
-    closing_section = (
-        "## 逻辑闭环评估与扩展研究建议\n\n"
-        "### 1. 逻辑闭环自检\n"
-        f"- 结构体检信号：OBJ 事实底座={obj_c}、SUB/SYN 机制权衡={sub_syn_c}、HYP 待证假说={hyp_c}、同域未入图原子卡={unmapped_c}。\n"
-        "- （待 Agent 结合已读卡片，说明当前论证链条哪些环节已闭环、哪些环节仍存在逻辑断层）\n\n"
-        "### 2. 形成逻辑闭环还缺哪些内容（Knowledge Gaps）\n"
-        f"{gap_bullets}\n\n"
-        "### 3. 建议扩展研究内容（Next Research Directions）\n"
-        "- （待 Agent 提出 2~4 条具体可执行的扩展研究或文献采集倡议，供人类确认后启动下一轮调研）\n"
-    )
-
     raw_summary = f"{resolved_title}，自动聚合 {len(included_refs)} 张活跃卡片"
     summary_txt = raw_summary if len(raw_summary) <= 200 else raw_summary[:197] + "…"
 
@@ -994,12 +996,12 @@ def moc_sync(
         if _MOC_START in updated_txt and _MOC_END in updated_txt:
             pre, rest = updated_txt.split(_MOC_START, 1)
             _, post = rest.split(_MOC_END, 1)
-            post_clean = post.lstrip("\n")
-            if "逻辑闭环评估" not in post_clean:
-                post_clean = (post_clean.rstrip() + "\n\n" + closing_section) if post_clean.strip() else closing_section
-            rendered = pre.rstrip() + "\n\n" + managed_block + "\n\n" + post_clean
+            prose = pre.rstrip()
+            if post.strip():
+                prose += "\n\n" + post.strip()
+            rendered = prose + "\n\n" + managed_block + "\n"
         else:
-            rendered = updated_txt.rstrip() + "\n\n" + managed_block + "\n\n" + closing_section
+            rendered = updated_txt.rstrip() + "\n\n" + managed_block + "\n"
     else:
         moc_pid_tok = own_pid if proj_prefix else "AI-Zone"
         clean_theme_new = re.sub(r"^MOC-", "", resolved_title, flags=re.I)
@@ -1019,7 +1021,7 @@ def moc_sync(
             tags=moc_tags,
             aliases=[],
             updated=_today(),
-            body=f"# {resolved_title}\n\n{managed_block}\n\n{closing_section}",
+            body=f"# {resolved_title}\n\n{managed_block}\n",
         )
         rendered = replace_frontmatter_field(rendered, "read_status", "unread")
         rendered = replace_frontmatter_field(rendered, "type", "SYN")
@@ -1055,6 +1057,7 @@ def moc_sync(
             "dry_run": True,
             "processing_stage": "dry_run_preview",
             "semantic_synthesis": "not_evaluated",
+            "authoring_instruction": "实读来源，在附录前围绕一个问题成文，用句中别名双链引证。末章回到开篇问题，区分已有证据与待验证推断，写明要补什么材料、怎样检验。",
             "read_status": effective_read_status,
             "private": effective_private,
             "matched_count": len(included_refs),
@@ -1088,6 +1091,7 @@ def moc_sync(
         "dry_run": False,
         "processing_stage": "index_synced",
         "semantic_synthesis": "not_evaluated",
+        "authoring_instruction": "实读来源，在附录前围绕一个问题成文，用句中别名双链引证。末章回到开篇问题，区分已有证据与待验证推断，写明要补什么材料、怎样检验。",
         "read_status": effective_read_status,
         "private": effective_private,
         "matched_count": len(included_refs),

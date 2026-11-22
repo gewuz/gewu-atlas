@@ -347,7 +347,6 @@ READ_ONLY_ACTIONS = frozenset(
         "change-list",
         "change-get",
         "doc-status",
-        "delivery-check",
     }
 )
 
@@ -986,7 +985,7 @@ _ACTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "anchor": "同构 Vault 放入 Volumes/GewuAtlas-data/ 后应在一次性窗口执行接管：省略 --vault 时仅在存在唯一未纳管同构库时盲采；拿到 vlt_XX 后请关闭本对话并开新对话日常使用。",
     },
     "atomic-extract": {
-        "command": './gewu atlas --action atomic-extract --ref <vlt_01> --note_ref <toc_或_library句柄> [--slice_refs <slc_01,slc_02>] --epistemic_type <OBJ|SUB|SYN|HYP> --title "<原子命题标题>" --summary "<一句核心断言>" --tags "<tag1,tag2>" --content "## 1. 核心定义与断言\\n...\\n## 2. 依据与机理\\n...\\n## 3. 边界与权衡\\n..." [--provenance \'[{"source_ref":"nte_XX","toc_ref":"nte_YY","slice_refs":["nte_ZZ"]}]\']',
+        "command": './gewu atlas --action atomic-extract --ref <vlt_01> --note_ref <toc_或_library句柄> [--slice_refs <slc_01,slc_02>] --epistemic_type <OBJ|SUB|SYN|HYP> --title "<原子命题标题>" --summary "<一句核心断言>" --tags "<tag1,tag2>" --content "<围绕单一主张说明依据、推理和适用边界>" [--provenance \'[{"source_ref":"nte_XX","toc_ref":"nte_YY","slice_refs":["nte_ZZ"]}]\']',
         "fill_template": {
             "action": "atomic-extract",
             "ref": "<vlt_01>",
@@ -996,10 +995,10 @@ _ACTION_TEMPLATES: Dict[str, Dict[str, Any]] = {
             "title": "<原子命题标题（凝练单一概念/结论，禁止照搬切片标题）>",
             "summary": "<一句可验证核心断言>",
             "tags": "<Tag1,Tag2>",
-            "content": "## 1. 核心定义与断言 (Claim)\\n...\\n\\n## 2. 依据与机理 (Evidence & Warrant)\\n...\\n\\n## 3. 边界与权衡 (Boundary & Trade-offs)\\n...",
+            "content": "<一卡一主张，写清依据、推理和适用边界；标题与段落按需组织>",
             "provenance": '[{"source_ref":"<lib_01>","toc_ref":"<toc_01>","slice_refs":["<slc_01>"]}]',
         },
-        "anchor": "须先读取 21-Library / 24-Slices 内容并自行提炼，再传入必填 --title 与蒸馏 --content（禁止留空复制切片原文）；epistemic_type 仅支持 OBJ/SUB/SYN/HYP。",
+        "anchor": "须先读取 21-Library / 24-Slices 内容并自行提炼，再传入必填 --title 与蒸馏 --content（禁止留空复制切片原文）；OBJ 写事实与条件，SUB 写取舍，SYN 写跨来源推断，HYP 写预测及反证条件。",
     },
     "ingest": {
         "command": './gewu atlas --action ingest --ref <vlt_01> [--project_ref <prj_01>] (--urls "<URL1>,<URL2>" | --file_name <文件名>) [--auto_slice true] [--target_zone library]',
@@ -1415,6 +1414,22 @@ def _execute_action(
 
     state_dir, _ = _runtime_dirs()
     is_shared = _is_non_mutating_vault_op(action, args) or action in ("vault", "status", "vault-list", "vault-get", "schema-list", "ticket-list")
+    if action == "url-ingest" and (args.get("urls") or args.get("url")) and not args.get("dry_run"):
+        from pipeline.atlas_fmt_engine import UrlPreparation, active_preparation
+        import tempfile
+        with _atlas_state_lock(state_dir):
+            plan = _execute_action_locked(action, args, ws_root, state_dir, hot_registries=hot_registries,
+                                          plan_urls=True)
+            if not isinstance(plan, UrlPreparation):
+                return plan
+        with tempfile.TemporaryDirectory(prefix="atlas-url-batch-", dir=state_dir) as temp:
+            plan.prepare(Path(temp).resolve())
+            token = active_preparation.set(plan)
+            try:
+                with _atlas_state_lock(state_dir):
+                    return _execute_action_locked(action, args, ws_root, state_dir)
+            finally:
+                active_preparation.reset(token)
     with _atlas_state_lock(state_dir, shared=is_shared):
         return _execute_action_locked(action, args, ws_root, state_dir, hot_registries=hot_registries)
 
@@ -1425,8 +1440,9 @@ def _execute_action_locked(
     ws_root: Path,
     state_dir: Path,
     *,
+    plan_urls: bool = False,
     hot_registries: Optional[Dict[str, Any]] = None,
-) -> Tuple[int, Dict[str, Any], List[str]]:
+):
     app_id = _app_id()
     kek = hot_registries["kek"] if (hot_registries and hot_registries.get("kek") is not None) else load_or_init_kek(state_dir / "atlas-vaults.kek")
     reg = hot_registries["vault_reg"] if (hot_registries and hot_registries.get("vault_reg") is not None) else KekVaultRegistry(app_id, state_dir / "atlas-vaults.enc", kek)
@@ -2081,22 +2097,38 @@ def _execute_action_locked(
     project_ref_arg = str(args.get("project_ref") or "").strip() or None
     scope_arg = str(args.get("scope") or "auto").strip() or "auto"
     ticket_id_arg = str(args.get("ticket_id") or "").strip() or None
-    return _run_governed_vault_action(
-        action=action,
-        args=args,
-        ws_root=ws_root,
-        state_dir=state_dir,
-        vdir=vdir,
-        vref=vref,
-        kek=kek,
-        app_id=app_id,
-        note_reg=note_reg,
-        proj_reg=proj_reg,
-        project_ref_arg=project_ref_arg,
-        scope_arg=scope_arg,
-        ticket_id_arg=ticket_id_arg,
-        sealed_paths=sealed_paths,
-    )
+    token = None
+    if plan_urls:
+        from pipeline.atlas_fmt_engine import active_preparation, plan_url_preparation
+        plan = plan_url_preparation(vdir, vref, proj_reg, args)
+        if plan is not None and plan.missing:
+            if ticket_id_arg:
+                ensure_doc_ticket(ws_root, vdir, task_key=f"auto:{vref}:{action}", title=f"Atlas 内容变更 ({action})",
+                                  actor=str(args.get("by") or args.get("agent") or "GewuAtlas"), ticket_id=ticket_id_arg)
+            args["ref"] = vref
+            return plan
+        if plan is not None:
+            token = active_preparation.set(plan)
+    try:
+        return _run_governed_vault_action(
+            action=action,
+            args=args,
+            ws_root=ws_root,
+            state_dir=state_dir,
+            vdir=vdir,
+            vref=vref,
+            kek=kek,
+            app_id=app_id,
+            note_reg=note_reg,
+            proj_reg=proj_reg,
+            project_ref_arg=project_ref_arg,
+            scope_arg=scope_arg,
+            ticket_id_arg=ticket_id_arg,
+            sealed_paths=sealed_paths,
+        )
+    finally:
+        if token is not None:
+            active_preparation.reset(token)
 
 
 _BATCH_READ_ONLY_ACTIONS = frozenset(
@@ -2752,6 +2784,8 @@ def _evaluate_delivery_gate(
         "issues": all_issues,
         "semantic_evaluation": {
             "max_score": 40,
+            "review_status": "pending",
+            "required_for_l3": True,
             "routing_policy": "subagent_if_available_else_self_eval",
             "when_to_run": "L3 复合研究/多卡变更必跑；L2 问答或单卡创作脑内快速核对；L1 单步原子操作免跑",
             "rubric": [
@@ -2759,14 +2793,28 @@ def _evaluate_delivery_gate(
                 {"id": "groundedness", "name": "真实性 (Groundedness)", "points": 15, "criteria": "核心结论是否句句绑定已实读/核验的 nte_XX 句柄且区分真值状态；未查到资料是否如实声明缺口"},
                 {"id": "readability", "name": "可读性与脱敏 (Readability & Zero-Path)", "points": 10, "criteria": "散文流畅、结构清晰（结论→界定→机理→边界），且全文零本机物理路径泄漏"},
             ],
-            "subagent_blind_review_prompt": (
-                "请作为独立只读审阅 Subagent，仅根据【1.用户原始请求 2.待交付正文与引用句柄 3.算子验货回执(60/60)】进行盲审打分（满分40分："
-                "完整性15分、真实性15分、可读性与零路径10分）。若发现罗列搜索碎片、虚构句柄、漏答核心问题或暴露物理路径，直接判不及格并列出修改点；"
-                "若总分 >= 60 且无硬伤，签发 PASS。"
-            ),
         },
         "path_sealed": True,
     }
+    review = report["semantic_evaluation"]
+    policy = (APP_DIR / "rules" / "rule-delivery-review.md").read_text(encoding="utf-8")
+    review["review_prompt"] = "依据原始任务、待交付正文、引用来源与硬评回执完成以下审阅。\n" + policy
+    review["subagent_blind_review_prompt"] = review["review_prompt"]
+    review["reviewed_refs"] = []
+    review["unreviewed_refs"] = [
+        note["note_ref"] for note in verified_notes
+        if note["doc_type"].lower() in {"atomic", "moc", "artifact"}
+    ]
+    review["item_review_template"] = {
+        "note_ref": None, "doc_type": None, "scores": dict.fromkeys(
+            ("completeness", "groundedness", "readability")
+        ), "verdict": None, "passage": None, "reason": None, "revision": None,
+    }
+    review["chain_review_template"] = {
+        "claim_location": None, "source_locations": [], "finding": None,
+        "effect_on_verdict": None,
+    }
+    review["unresolved_refs"] = unverified_refs
     return report, sealed
 
 
@@ -3062,7 +3110,8 @@ def _run_governed_vault_action(
         )
         return 0, _envelope(True, "OK_DOC_SYNC", cap, data=sync_res), sealed_paths
 
-    if _is_non_mutating_vault_op(action, args):
+    # Manifest synchronization uses the exclusive lock but must not trigger a second delivery gate.
+    if action == "delivery-check" or _is_non_mutating_vault_op(action, args):
         if ticket_id_arg:
             if action.startswith("slip-"):
                 ensure_slip_ticket(ws_root, vdir, task_key=f"check:{vref}:{action}", title=f"查验工单 ({action})", ticket_id=ticket_id_arg)
@@ -3407,26 +3456,23 @@ def _attach_auto_slices(
     use_adaptive = bool(args.get("adaptive", "level" not in args))
     sliced_rows: List[Dict[str, Any]] = []
     slice_errors: List[Dict[str, Any]] = []
+    batch_state = None
+    if use_adaptive and len(cand_refs) > 1:
+        from pipeline.atlas_slicer_engine import SliceBatch, note_slice_adaptive
+        batch_state = SliceBatch(vault_dir)
     for nref in cand_refs:
         try:
-            sres, spaths = engine_note_slice(
-                vault_dir=vault_dir,
-                vault_ref=vault_ref,
-                note_reg=note_reg,
-                proj_reg=proj_reg,
-                kek=kek,
-                app_id=app_id,
-                note_ref=nref,
-                project_ref=project_ref,
-                scope=scope,
-                level=level_val,
-                adaptive=use_adaptive,
-                min_chars=args.get("min_chars"),
-                max_chars=args.get("max_chars"),
-                target_chars=args.get("target_chars"),
-                prefix=args.get("prefix"),
-                idempotent=True,
-            )
+            common = dict(vault_dir=vault_dir, vault_ref=vault_ref, note_reg=note_reg, proj_reg=proj_reg,
+                          app_id=app_id, note_ref=nref, project_ref=project_ref, scope=scope, idempotent=True)
+            if batch_state is None:
+                sres, spaths = engine_note_slice(**common, kek=kek, level=level_val, adaptive=use_adaptive,
+                    min_chars=args.get("min_chars"), max_chars=args.get("max_chars"),
+                    target_chars=args.get("target_chars"), prefix=args.get("prefix"))
+            else:
+                sres, spaths = note_slice_adaptive(**common, batch=batch_state,
+                    min_chars=300 if args.get("min_chars") is None else args["min_chars"],
+                    max_chars=4000 if args.get("max_chars") is None else args["max_chars"],
+                    target_chars=args.get("target_chars"), custom_prefix=args.get("prefix"))
             sealed_paths.extend(spaths)
             sliced_rows.append(
                 {
@@ -3441,6 +3487,15 @@ def _attach_auto_slices(
             slice_errors.append({"source_note_ref": nref, "code": exc.code, "reason": exc.message})
         except Exception as exc:
             slice_errors.append({"source_note_ref": nref, "code": "E_SLICE_FAILED", "reason": str(exc)[:160]})
+        if batch_state is not None and slice_errors and slice_errors[-1]["source_note_ref"] == nref:
+            batch_state = SliceBatch(vault_dir)
+    if batch_state is not None:
+        mapping = note_reg.sync_paths(vault_ref, sorted(batch_state.paths))
+        sealed_paths.extend(batch_state.paths)
+        for row in sliced_rows:
+            row["toc_note_ref"] = mapping.get(row["toc_note_ref"])
+            for card in row["slices"]:
+                card["note_ref"] = mapping[card["note_ref"]]
     res["auto_slices"] = sliced_rows
     if slice_errors:
         res["slice_errors"] = slice_errors
@@ -4489,10 +4544,10 @@ def _dispatch_vault_action(
         passed = report["operator_passed"]
         if passed:
             cap = _triad(
-                f"Vault {vref} 交付闸门算子硬评估通过（得分 {score}/60，空间净空/Schema/双链真值/审批边界全绿）[只读完成]",
+                f"Vault {vref} 交付闸门算子硬评估通过（得分 {score}/60，空间净空/Schema/双链真值/审批边界全绿）",
                 [
-                    "若具备 Subagent 能力：唤起只读 Subagent 按 semantic_evaluation.rubric 盲审交付物（满分 40 分），总分 >= 60 即可交付",
-                    "若无 Subagent 能力：对照 semantic_evaluation.rubric 完成三维自我评估（完整性/真实性/可读性）后直接向人类交付",
+                    "若具备 Subagent 能力：唤起只读 Subagent 按 semantic_evaluation.review_prompt 逐件盲审并核对跨卡证据链（满分 40 分），单列语义 PASS/FAIL，硬评与语义均通过方可交付",
+                    "若无 Subagent 能力：对照 semantic_evaluation.review_prompt 逐件自评并核对跨卡证据链（完整性/真实性/可读性），按同一标准记录语义 PASS/FAIL，两项均通过方可交付",
                 ],
                 "算子 60 分硬底线已签发 PASS；请完成剩余 40 分语义质量评估（Subagent 优先，自评降级）后正式交付。",
                 terminal=True,
@@ -4624,7 +4679,7 @@ def _dispatch_vault_action(
                     f"顺枢纽卡漫游实读: ./gewu atlas --action note-get --ref {vref} --note_refs <member_refs>",
                     f"为成熟簇建图: ./gewu atlas --action moc-sync --ref {vref} --title '<主题>' --tag '<suggested_tag>'",
                 ],
-                "自主漫游流程：1) 选成熟簇并读完核心原子卡 2) 调 moc-sync 生成索引与脑图 3) 调 note-update 补全顶部宏观综述与底部「逻辑闭环评估、缺失内容与扩展研究建议」。",
+                "实读候选簇的来源，用 moc-sync 刷新附录，再用 note-patch 在附录前撰写文章，末章说明尚待验证的判断。",
                 terminal=True,
             )
             return 0, _envelope(True, "OK_MOC_ROAM_DISCOVER", cap, data=res), sealed_paths
@@ -4658,11 +4713,11 @@ def _dispatch_vault_action(
         cap = _triad(
             f"MOC 已同步「{res['title']}」（{res['moc_ref']}，纳入={res['matched_count']}，map+={res['map_added_count']}/-={res['map_removed_count']}）",
             [
-                f"读取并补全综述与逻辑闭环/缺口/扩展研究建议: ./gewu atlas --action note-get --ref {vref} --note_ref {res['moc_ref']}",
-                f"自主漫游扫描剩余未归属簇: ./gewu atlas --action moc-sync --ref {vref} --mode roam",
+                res["authoring_instruction"],
+                "核对正文引用与末章证据缺口后，再向人类汇报。",
             ],
-            "已刷新受管索引、map 与逻辑闭环诊断骨架；请调 note-update 补写顶部宏观综述及底部「逻辑闭环评估、缺失内容与扩展研究建议」才算完整织网。",
-            terminal=True,
+            "用 note-patch 撰写或维护索引外正文。同步只确认附录刷新，文章质量由 Agent 审阅。",
+            terminal=False,
         )
         return 0, _envelope(True, "OK_MOC_SYNCED", cap, data=res), sealed_paths
 
@@ -4933,10 +4988,15 @@ def _dispatch_vault_action(
         requires_approval_hit = False
         succeeded = 0
         failed = 0
+        prepared_steps = []
+        step_positions = {}
         for idx, step in enumerate(raw_steps, start=1):
             if not isinstance(step, dict):
                 raise VaultStoreError("E_PARAM_INVALID", f"batch 第 {idx} 步必须为对象", exit_code=1)
             sid_lbl = str(step.get("id") or f"step_{idx}").strip()
+            if sid_lbl in step_positions:
+                raise VaultStoreError("E_PARAM_INVALID", f"batch 第 {idx} 步与第 {step_positions[sid_lbl]} 步 ID 重复: {sid_lbl}", exit_code=1)
+            step_positions[sid_lbl] = idx
             s_act = str(step.get("action") or "").strip()
             if s_act not in _BATCH_ALLOWED:
                 raise VaultStoreError(
@@ -4944,7 +5004,15 @@ def _dispatch_vault_action(
                     f"batch 步骤 {sid_lbl} 的动作 '{s_act}' 不在批处理白名单内（高危/需单独人工拍板动作禁止混入 batch）",
                     exit_code=1,
                 )
-            s_args_raw = step.get("args") if isinstance(step.get("args"), dict) else {}
+            s_args_raw = step.get("args", {})
+            if not isinstance(s_args_raw, dict):
+                raise VaultStoreError("E_PARAM_INVALID", f"batch 步骤 {sid_lbl} 的 args 必须为对象", exit_code=1)
+            for key in s_args_raw:
+                if str(key).replace("-", "_") not in KNOWN_SLOTS:
+                    raise VaultStoreError("E_PARAM_UNKNOWN_FIELD", f"batch 步骤 {sid_lbl} 含未知字段: {key}", exit_code=2)
+            prepared_steps.append((sid_lbl, s_act, s_args_raw))
+
+        for sid_lbl, s_act, s_args_raw in prepared_steps:
             s_args: Dict[str, Any] = {
                 "action": s_act,
                 "ref": vref,
@@ -4954,24 +5022,22 @@ def _dispatch_vault_action(
                 "scope": scope_arg,
                 "ticket_id": ticket_id_arg,
             }
-            resolved_step_args = _resolve_batch_val(s_args_raw)
-            for k, v in resolved_step_args.items():
-                nk = str(k).replace("-", "_")
-                if nk not in KNOWN_SLOTS:
-                    raise VaultStoreError("E_PARAM_UNKNOWN_FIELD", f"batch 步骤 {sid_lbl} 含未知字段: {k}", exit_code=2)
-                slot_kind = KNOWN_SLOTS.get(nk)
-                if slot_kind == "bool" and not isinstance(v, bool):
-                    v = _coerce_bool(v, nk)
-                elif slot_kind == "int" and v is not None and not isinstance(v, int):
-                    try:
-                        v = int(v)
-                    except (ValueError, TypeError) as exc:
-                        raise VaultStoreError("E_PARAM_INVALID", f"batch 步骤 {sid_lbl} 参数 --{nk} 必须为整数", exit_code=1) from exc
-                s_args[nk] = v
-            s_args["_provided_keys"] = sorted(set(s_args.keys()))
-            s_proj_ref = str(s_args.get("project_ref") or "").strip() or None
-            s_scope = str(s_args.get("scope") or "auto").strip() or "auto"
             try:
+                resolved_step_args = _resolve_batch_val(s_args_raw)
+                for k, v in resolved_step_args.items():
+                    nk = str(k).replace("-", "_")
+                    slot_kind = KNOWN_SLOTS.get(nk)
+                    if slot_kind == "bool" and not isinstance(v, bool):
+                        v = _coerce_bool(v, nk)
+                    elif slot_kind == "int" and v is not None and not isinstance(v, int):
+                        try:
+                            v = int(v)
+                        except (ValueError, TypeError) as exc:
+                            raise VaultStoreError("E_PARAM_INVALID", f"batch 步骤 {sid_lbl} 参数 --{nk} 必须为整数", exit_code=1) from exc
+                    s_args[nk] = v
+                s_args["_provided_keys"] = sorted(set(s_args.keys()))
+                s_proj_ref = str(s_args.get("project_ref") or "").strip() or None
+                s_scope = str(s_args.get("scope") or "auto").strip() or "auto"
                 s_rc, s_env, s_sealed = _dispatch_vault_action(
                     action=s_act,
                     args=s_args,
@@ -5005,7 +5071,8 @@ def _dispatch_vault_action(
                         s_export["note_refs"] = ",".join(uniq_refs)
                         if uniq_refs:
                             s_export["top_note_ref"] = uniq_refs[0]
-                step_outputs[sid_lbl] = s_export
+                if s_rc == 0:
+                    step_outputs[sid_lbl] = s_export
                 s_entry: Dict[str, Any] = {
                     "id": sid_lbl,
                     "action": s_act,
